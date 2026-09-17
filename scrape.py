@@ -43,6 +43,32 @@ except ImportError:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_env_file() -> None:
+    """Read .env beside this script into the environment.
+
+    Done here rather than relying on the caller so a cron line cannot quietly
+    run without the ingest secret and then fail at the last step of a 2.5 hour
+    pass. Real environment variables always win, so overriding one for a single
+    run still works. No dependency: python-dotenv is not worth installing for
+    six keys.
+    """
+    path = os.path.join(HERE, ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip().strip("\"'")
+
+
+_load_env_file()
+
 # ── Configuration ────────────────────────────────────────────────────────────
 API_BASE = os.environ.get("API_BASE", "https://flightklub.com")
 SECRET = os.environ.get("FARE_INGEST_SECRET", "")
