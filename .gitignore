@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets — never commit. FLIGHT_FINDER_SECRET lives in the CRM's Vercel env,
+# proxy credentials in PROXY_URLS. See README.
+.env
+.env.*
+!.env.example
+
+# Scraper output / logs
+*.log
+out/
