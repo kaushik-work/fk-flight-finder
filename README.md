@@ -84,26 +84,39 @@ Same route, same day, via the `fast-flights` Python library:
 | Public IPv4 | enabled — static, ours, whitelistable |
 | Monitoring | enabled |
 | Backups | off (correct — the box holds no state worth keeping) |
-| IP address | **NOT YET RECORDED — fill this in** |
+| IP address | **139.59.61.222** (DigitalOcean AP, verified by whois) |
+| Hostname | `fk-flight-scraper` |
+| Timezone | Asia/Kolkata |
+| Swap | 2 GB, added and in `/etc/fstab` |
+| Scraper root | `/opt/fk-flight-finder` (venv + `fast-flights` 3.1.0) |
 
 SSH in with:
 
 ```bash
-ssh -i ~/.ssh/trripah_droplet root@<ip>
+ssh -i ~/.ssh/trripah_droplet root@139.59.61.222
 ```
 
 Key is ed25519, no passphrase, fingerprint
 `SHA256:od13NN7FLmYX2mII8439359r/f2ZXbyI+TCN56A/SXs`. Private key stays on the
 Mac at `~/.ssh/trripah_droplet`.
 
-**First thing after boot — add swap.** 1 GB plus Chromium will spike past it,
-and swap turns an OOM kill into a slow request:
+Provisioned 18 Sep 2026: swap, hostname, IST timezone, Python 3.12.3, venv at
+`/opt/fk-flight-finder/.venv` with `fast-flights` 3.1.0. Nothing else installed
+yet — no Chromium, because the protobuf path does not need it.
 
-```bash
-fallocate -l 2G /swapfile && chmod 600 /swapfile
-mkswap /swapfile && swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
-```
+### Verified: Google serves this IP unproxied
+
+Run from the droplet, 18 Sep 2026, BLR→DXB:
+
+| Departure | Fares returned | Cheapest |
+|---|---|---|
+| 15 Nov 2026 | 4 | ₹31,714 |
+| 15 Dec 2026 | 3 | ₹34,967 |
+
+Within a few hundred rupees of the same queries from a home connection
+(₹31,666 / ₹34,919), which is ordinary fare movement. **So the droplet's own IP
+is not blocked and returns correct India-localised prices. Proxies are not
+needed to begin.** Revisit only if CAPTCHAs appear at full nightly volume.
 
 Bangalore is the right region: Google serves India-localised fares, so an
 Indian IP with `curr=INR` is more consistent than scraping from the US or EU.
@@ -243,22 +256,23 @@ scale this does not need.
 
 ## Open questions
 
-1. **Droplet IP** — not yet recorded above.
-2. **Proxy budget** — free on the droplet IP now, or ~$10/month residential
-   from the start? Recommendation: residential from day one. It is the cheapest
-   thing that moves the needle, and retrofitting rotation costs more.
-3. **Which site consumes this?** The folder is named `fk-`, but
+1. **Proxy budget** — resolved for now: the droplet IP works unproxied
+   (evidence above), so start free. The fetch layer still reads `PROXY_URLS` so
+   residential rotation can be switched on without a code change if blocks
+   appear at full volume.
+2. **Which site consumes this?** The folder is named `fk-`, but
    `flight-klub-website` is a charter and helicopter business, not a fare search
    product, and the storage contract above lives in the Trripah CRM. Confirm
    whether this serves Trripah, FlightKlub, or both.
 
 ## First steps
 
-1. Record the droplet IP in this file.
-2. Push and deploy `f987fec`; confirm `/api/flight-deals` returns 200.
-3. Read `FLIGHT_FINDER_SECRET` from the CRM's Vercel env; align the scraper.
-4. Provision the droplet: swap, Python 3.12, venv, `fast-flights`.
-5. Port the scraper from `trripah_website@761de79^:scripts/flight-scraper/`,
+1. ~~Record the droplet IP.~~ Done.
+2. ~~Provision the droplet.~~ Done — swap, Python, venv, `fast-flights`.
+3. ~~Confirm Google serves the droplet IP.~~ Done, see above.
+4. Push and deploy `f987fec`; confirm `/api/flight-deals` returns 200.
+5. Read `FLIGHT_FINDER_SECRET` from the CRM's Vercel env; align the scraper.
+6. Port the scraper from `trripah_website@761de79^:scripts/flight-scraper/`,
    keeping **every** priced date pair.
-6. Dry-run one origin, confirm November and December fares appear, then store.
-7. Add cron at 03:30 IST, well clear of any site cron.
+7. Dry-run one origin, confirm November and December fares appear, then store.
+8. Add cron at 03:30 IST, well clear of any site cron.
