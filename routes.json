@@ -1,0 +1,222 @@
+{
+  "generatedAt": "2026-09-17T12:58:18.985Z",
+  "origins": [
+    {
+      "slug": "bangalore",
+      "code": "BLR",
+      "city": "Bangalore"
+    },
+    {
+      "slug": "mumbai",
+      "code": "BOM",
+      "city": "Mumbai"
+    },
+    {
+      "slug": "delhi",
+      "code": "DEL",
+      "city": "Delhi"
+    },
+    {
+      "slug": "hyderabad",
+      "code": "HYD",
+      "city": "Hyderabad"
+    },
+    {
+      "slug": "chennai",
+      "code": "MAA",
+      "city": "Chennai"
+    },
+    {
+      "slug": "kolkata",
+      "code": "CCU",
+      "city": "Kolkata"
+    },
+    {
+      "slug": "pune",
+      "code": "PNQ",
+      "city": "Pune"
+    },
+    {
+      "slug": "ahmedabad",
+      "code": "AMD",
+      "city": "Ahmedabad"
+    }
+  ],
+  "destinations": [
+    {
+      "slug": "dubai",
+      "code": "DXB",
+      "city": "Dubai",
+      "country": "United Arab Emirates",
+      "domestic": false
+    },
+    {
+      "slug": "abu-dhabi",
+      "code": "AUH",
+      "city": "Abu Dhabi",
+      "country": "United Arab Emirates",
+      "domestic": false
+    },
+    {
+      "slug": "bangkok",
+      "code": "BKK",
+      "city": "Bangkok",
+      "country": "Thailand",
+      "domestic": false
+    },
+    {
+      "slug": "phuket",
+      "code": "HKT",
+      "city": "Phuket",
+      "country": "Thailand",
+      "domestic": false
+    },
+    {
+      "slug": "singapore",
+      "code": "SIN",
+      "city": "Singapore",
+      "country": "Singapore",
+      "domestic": false
+    },
+    {
+      "slug": "kuala-lumpur",
+      "code": "KUL",
+      "city": "Kuala Lumpur",
+      "country": "Malaysia",
+      "domestic": false
+    },
+    {
+      "slug": "bali",
+      "code": "DPS",
+      "city": "Bali",
+      "country": "Indonesia",
+      "domestic": false
+    },
+    {
+      "slug": "tokyo",
+      "code": "TYO",
+      "city": "Tokyo",
+      "country": "Japan",
+      "domestic": false
+    },
+    {
+      "slug": "osaka",
+      "code": "KIX",
+      "city": "Osaka",
+      "country": "Japan",
+      "domestic": false
+    },
+    {
+      "slug": "maldives",
+      "code": "MLE",
+      "city": "Malé",
+      "country": "Maldives",
+      "domestic": false
+    },
+    {
+      "slug": "colombo",
+      "code": "CMB",
+      "city": "Colombo",
+      "country": "Sri Lanka",
+      "domestic": false
+    },
+    {
+      "slug": "reunion",
+      "code": "RUN",
+      "city": "Réunion",
+      "country": "Réunion",
+      "domestic": false
+    },
+    {
+      "slug": "mauritius",
+      "code": "MRU",
+      "city": "Mauritius",
+      "country": "Mauritius",
+      "domestic": false
+    },
+    {
+      "slug": "london",
+      "code": "LHR",
+      "city": "London",
+      "country": "United Kingdom",
+      "domestic": false
+    },
+    {
+      "slug": "paris",
+      "code": "CDG",
+      "city": "Paris",
+      "country": "France",
+      "domestic": false
+    },
+    {
+      "slug": "amsterdam",
+      "code": "AMS",
+      "city": "Amsterdam",
+      "country": "Netherlands",
+      "domestic": false
+    },
+    {
+      "slug": "rome",
+      "code": "FCO",
+      "city": "Rome",
+      "country": "Italy",
+      "domestic": false
+    },
+    {
+      "slug": "milan",
+      "code": "MXP",
+      "city": "Milan",
+      "country": "Italy",
+      "domestic": false
+    },
+    {
+      "slug": "munich",
+      "code": "MUC",
+      "city": "Munich",
+      "country": "Germany",
+      "domestic": false
+    },
+    {
+      "slug": "zurich",
+      "code": "ZRH",
+      "city": "Zurich",
+      "country": "Switzerland",
+      "domestic": false
+    },
+    {
+      "slug": "istanbul",
+      "code": "IST",
+      "city": "Istanbul",
+      "country": "Türkiye",
+      "domestic": false
+    },
+    {
+      "slug": "delhi",
+      "code": "DEL",
+      "city": "Delhi",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "mumbai",
+      "code": "BOM",
+      "city": "Mumbai",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "chennai",
+      "code": "MAA",
+      "city": "Chennai",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "kolkata",
+      "code": "CCU",
+      "city": "Kolkata",
+      "country": "India",
+      "domestic": true
+    }
+  ]
+}

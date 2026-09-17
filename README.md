@@ -144,32 +144,57 @@ and knows what people actually ask for. Let it rank tomorrow's route list by
 real demand so we scrape ~400 routes people want instead of 1,800 by rote.
 That is a 78% cut in exposure and better data at the same time.
 
-### Storage — the Trripah CRM
+### Backend — the FlightKlub site (NOT the Trripah CRM)
 
-`https://trripah-crm-nextjs.vercel.app`, MongoDB database `trripah_crm`.
+`flight-klub-website`, MongoDB database `flightklub`, collection
+`flight_fares`. Route: `app/api/flight-fares/route.ts`.
 
-| Endpoint | Auth | Purpose |
+| Method | Auth | Purpose |
 |---|---|---|
-| `/api/flight-deals` | `x-flight-secret` on write; open read | the board/fare store |
-| `/api/flight-search-cache` | `x-flight-secret` on both | per-search cache |
-| `/api/flight-quota` | `x-flight-secret` on both | metered-provider budget |
+| `POST /api/flight-fares` | `x-fare-secret` header | scraper ingest |
+| `GET /api/flight-fares` | open | what the frontend reads |
 
-POST shape: `{ originSlug, deals[] }`. It **replaces** all rows for that origin
-and **refuses an empty array**, so a failed scrape leaves the previous data
-alone rather than wiping the board. Read limit is 400 rows per origin.
+POST body is `{ originSlug, fares[] }` and **replaces** every stored fare for
+that origin, so a route whose fare has vanished disappears rather than lingering
+at last night's price. It drops rows with a bad date or a non-positive price,
+and **refuses an empty array** — a blocked scrape must look like stale prices,
+never like there are no flights.
 
-**Two blockers before anything can be stored:**
+GET filters on `origin`, `destination` and `month`, sorted cheapest first,
+capped at 500 rows, cached 30 minutes at the edge. `month` matches the month you
+*depart* in.
 
-1. Commit `f987fec` in `trripah_crm_nextjs` must be pushed and deployed.
-   Verify with: `curl -s -o /dev/null -w '%{http_code}'
-   'https://trripah-crm-nextjs.vercel.app/api/flight-deals?origin=bangalore'`
-   — must be **200**, not 401.
-2. **`FLIGHT_FINDER_SECRET` does not match.** The `trripah_website` `.env`
-   value is 57 characters, the `trripah_crm_nextjs` one is 58. Neither local
-   file is authoritative — **the CRM's Vercel environment variable is.** Read it
-   there and make the scraper send exactly that.
+**Deliberately not under `/api/admin`.** That prefix is gated by `proxy.ts` on
+an admin session cookie, and a scraper has no cookie. This is the exact trap
+that killed the previous attempt in the CRM repo: the auth gate rejected the
+ingest call before the route's own secret check ran, so nothing was ever stored
+and the cause stayed invisible. FlightKlub's `proxy.ts` matcher is
+`["/admin/:path*", "/api/admin/:path*"]` only — verified — so `/api/flight-fares`
+is not gated.
 
----
+`FARE_INGEST_SECRET` is generated and in `flight-klub-website/.env.local`.
+**It must be copied into Vercel for that project**, and into the droplet's
+`/opt/fk-flight-finder/.env`.
+
+#### Verified end to end, 18 Sep 2026
+
+Run against a local FlightKlub build with the real database:
+
+| Test | Result |
+|---|---|
+| POST without the secret | 401 |
+| POST with secret, empty `fares[]` | 400, stored rows untouched |
+| POST 3 fares, one with a bad date and zero price | `stored: 2, skipped: 1` |
+| `GET ?origin=bangalore&month=2026-11` | returned the November fare |
+| `GET ?origin=bangalore` | 2 fares across Nov and Dec |
+
+Test rows were deleted afterwards; the collection is empty.
+
+### Frontend — the Trripah website
+
+`trripah_website` renders the fares. Nothing is built there yet — the old
+feature was deleted in `761de79`. It should read `GET /api/flight-fares` from
+FlightKlub and must keep the display rules below.
 
 ## Avoiding blocks — what actually matters
 
@@ -217,10 +242,10 @@ Droplet (BLR1, cron nightly)    ▼
   Playwright fetch (fallback)─┴──> every priced date pair
                                 │
                                 ▼
-            POST {CRM}/api/flight-deals  (x-flight-secret)
+   POST {flightklub}/api/flight-fares  (x-fare-secret)
                                 │
                                 ▼
-                    website reads and renders
+      Trripah website reads GET /api/flight-fares
 ```
 
 Rules carried over from the old spec, all of which were right:
@@ -270,9 +295,14 @@ scale this does not need.
 1. ~~Record the droplet IP.~~ Done.
 2. ~~Provision the droplet.~~ Done — swap, Python, venv, `fast-flights`.
 3. ~~Confirm Google serves the droplet IP.~~ Done, see above.
-4. Push and deploy `f987fec`; confirm `/api/flight-deals` returns 200.
-5. Read `FLIGHT_FINDER_SECRET` from the CRM's Vercel env; align the scraper.
-6. Port the scraper from `trripah_website@761de79^:scripts/flight-scraper/`,
-   keeping **every** priced date pair.
-7. Dry-run one origin, confirm November and December fares appear, then store.
-8. Add cron at 03:30 IST, well clear of any site cron.
+4. ~~Port the scraper.~~ Done — `scrape.py` here, deployed to
+   `/opt/fk-flight-finder/` on the droplet, keeping every priced date pair.
+   A dry run returned 7 Dubai fares across Oct, Nov, Dec and Jan.
+5. ~~Build the backend.~~ Done — `flight-klub-website`
+   `app/api/flight-fares/route.ts`, verified end to end.
+6. Copy `FARE_INGEST_SECRET` from `flight-klub-website/.env.local` into that
+   project's Vercel env, and into `/opt/fk-flight-finder/.env` on the droplet.
+7. Deploy FlightKlub, then run `scrape.py --origins bangalore` for real and
+   confirm rows land in `flight_fares`.
+8. Add cron at 03:30 IST.
+9. Build the frontend in `trripah_website` against `GET /api/flight-fares`.
