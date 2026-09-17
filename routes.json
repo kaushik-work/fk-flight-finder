@@ -184,13 +184,6 @@
       "domestic": false
     },
     {
-      "slug": "istanbul",
-      "code": "IST",
-      "city": "Istanbul",
-      "country": "Türkiye",
-      "domestic": false
-    },
-    {
       "slug": "delhi",
       "code": "DEL",
       "city": "Delhi",
