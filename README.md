@@ -271,6 +271,45 @@ environment variable is set. No code change to switch it on.
 
 ---
 
+## Running it
+
+Scheduled on the droplet, 02:00 IST daily:
+
+```
+0 2 * * * /opt/fk-flight-finder/run.sh
+```
+
+A full pass is ~3 hours, so it finishes near 05:00 — inside the 02:00–07:00
+window and hours clear of the 07:00 deadline. `run.sh` takes a `flock` first: a
+pass that overruns must not have the next day stack on top of it, because two
+scrapers hitting Google from one IP is the burst that earns a CAPTCHA, and the
+second would also fight the first over the replace-per-origin write. A skipped
+run is logged rather than silent.
+
+Logs go to `/var/log/fk-flight-finder.log`, rotated weekly, 14 kept.
+
+Manual runs:
+
+```bash
+ssh -i ~/.ssh/trripah_droplet root@139.59.61.222
+cd /opt/fk-flight-finder
+./.venv/bin/python scrape.py --origins bangalore       # one origin, ~19 min
+./.venv/bin/python scrape.py --dry-run --limit 1       # ~1 min, writes nothing
+./.venv/bin/python scrape.py                           # everything, ~3 h
+```
+
+Deploy changes from this repo with `./deploy.sh`. It syncs `scrape.py`,
+`routes.json` and `run.sh` only — `.env` holds the ingest secret and is managed
+on the droplet directly.
+
+### Reading the log
+
+`IndexError` lines are normal, not blocks. Google occasionally serves a layout
+the parser does not recognise; the rate is around 7% and the scraper retries
+once then moves on rather than hammering a failing route. A real block looks
+different: every request failing, or a CAPTCHA page in place of results. The
+same rate was seen from a home connection, so it is the parser, not the IP.
+
 ## Volume
 
 8 origins × 25 destinations × 9 date pairs = **1,800 requests per full pass**,
