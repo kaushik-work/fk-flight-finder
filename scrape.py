@@ -146,8 +146,27 @@ def _proxy_for(attempt: int) -> str | None:
 
 
 def _seg_date(segment: Any) -> str | None:
+    """ISO departure date of one leg.
+
+    The library hands back a SimpleDatetime dataclass whose repr begins
+    "SimpleDatetime(date=(2027, 1, 28)...", so the previous str(raw)[:10] read
+    "SimpleDate" and never matched a date. Nothing errored: every leg was
+    filtered out, stops and durations came back None, and the site printed
+    "Direct" with no duration for every fare — including a BLR-CMB-MLE
+    itinerary that plainly has a stop. Read the tuple instead.
+    """
     raw = getattr(segment, "departure", None) or getattr(segment, "date", None)
-    return str(raw)[:10] if raw else None
+    if raw is None:
+        return None
+    parts = getattr(raw, "date", None)  # SimpleDatetime -> (yyyy, mm, dd)
+    if isinstance(parts, (tuple, list)) and len(parts) >= 3:
+        try:
+            return f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+        except (TypeError, ValueError):
+            return None
+    if isinstance(raw, str):  # _tolerant_parse already yields an ISO string
+        return raw[:10]
+    return None
 
 
 def _sum_duration(segments: list[Any]) -> int | None:
@@ -332,15 +351,18 @@ def to_fare(origin: Place, dest: Place, dep: str, ret: str, fare: dict[str, Any]
         "nights": nights,
         "price": fare["price"],
         "currency": "INR",
+        # Unknown stays null rather than becoming 0. Defaulting to zero is how
+        # "we could not read the legs" turned into "Direct" on the page, which
+        # is a claim about someone's itinerary we had no basis for.
         "outbound": {
             "from": origin.code, "to": dest.code, "date": dep,
-            "stops": fare["outStops"] if fare["outStops"] is not None else 0,
+            "stops": fare["outStops"],
             "durationMinutes": fare["outDuration"],
             "airlineName": fare["airline"],
         },
         "inbound": {
             "from": dest.code, "to": origin.code, "date": ret,
-            "stops": fare["inStops"] if fare["inStops"] is not None else 0,
+            "stops": fare["inStops"],
             "durationMinutes": fare["inDuration"],
             "airlineName": fare["airline"],
         },
