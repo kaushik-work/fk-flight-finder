@@ -145,30 +145,6 @@ def _proxy_for(attempt: int) -> str | None:
     return PROXY_URLS[attempt % len(PROXY_URLS)]
 
 
-def _seg_date(segment: Any) -> str | None:
-    """ISO departure date of one leg.
-
-    The library hands back a SimpleDatetime dataclass whose repr begins
-    "SimpleDatetime(date=(2027, 1, 28)...", so the previous str(raw)[:10] read
-    "SimpleDate" and never matched a date. Nothing errored: every leg was
-    filtered out, stops and durations came back None, and the site printed
-    "Direct" with no duration for every fare — including a BLR-CMB-MLE
-    itinerary that plainly has a stop. Read the tuple instead.
-    """
-    raw = getattr(segment, "departure", None) or getattr(segment, "date", None)
-    if raw is None:
-        return None
-    parts = getattr(raw, "date", None)  # SimpleDatetime -> (yyyy, mm, dd)
-    if isinstance(parts, (tuple, list)) and len(parts) >= 3:
-        try:
-            return f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-        except (TypeError, ValueError):
-            return None
-    if isinstance(raw, str):  # _tolerant_parse already yields an ISO string
-        return raw[:10]
-    return None
-
-
 def _sum_duration(segments: list[Any]) -> int | None:
     total = 0
     seen = False
@@ -178,6 +154,50 @@ def _sum_duration(segments: list[Any]) -> int | None:
             total += int(minutes)
             seen = True
     return total if seen else None
+
+
+def _seg_airports(segment: Any) -> tuple[str | None, str | None]:
+    """(from, to) IATA codes for one leg, from either parse path."""
+    frm = getattr(segment, "from_airport", None)
+    to = getattr(segment, "to_airport", None)
+    frm = getattr(frm, "code", frm)
+    to = getattr(to, "code", to)
+    return (frm or None, to or None)
+
+
+def _split_legs(
+    segments: list[Any], origin_code: str, dest_code: str
+) -> tuple[list[Any], list[Any]]:
+    """Outbound and inbound legs of a round trip.
+
+    Splitting on departure date — what this did before — loses any connection
+    that departs on the next calendar day. A BLR-BAH-DXB itinerary whose second
+    leg leaves after midnight kept only BLR-BAH, so the fare was published as a
+    non-stop of the first leg's duration: Gulf Air "Direct" on 2026-12-28, a
+    route Gulf Air only flies via Bahrain. Walking the legs in order and cutting
+    where the itinerary first reaches the destination is true whatever the clock
+    does.
+
+    When the legs never reach the destination the shape is not what we think it
+    is, so return nothing rather than guess: stops and duration then come back
+    None and the page omits the claim instead of printing a wrong one.
+    """
+    out: list[Any] = []
+    inbound: list[Any] = []
+    arrived = False
+    for seg in segments:
+        _, to = _seg_airports(seg)
+        if not arrived:
+            out.append(seg)
+            if to and to == dest_code:
+                arrived = True
+        else:
+            inbound.append(seg)
+            if to and to == origin_code:
+                break
+    if not arrived:
+        return [], []
+    return out, inbound
 
 
 # ── Tolerant parse ───────────────────────────────────────────────────────────
@@ -197,11 +217,15 @@ def _sum_duration(segments: list[Any]) -> int | None:
 # changes the payload shape both will break together and the error will say so.
 
 class _Seg:
-    __slots__ = ("departure", "duration")
+    __slots__ = ("departure", "duration", "from_airport", "to_airport")
 
-    def __init__(self, departure: str, duration: Any) -> None:
+    def __init__(
+        self, departure: str, duration: Any, from_airport: str | None, to_airport: str | None
+    ) -> None:
         self.departure = departure
         self.duration = duration
+        self.from_airport = from_airport
+        self.to_airport = to_airport
 
 
 class _Itinerary:
@@ -246,7 +270,14 @@ def _tolerant_parse(query: Any) -> list[_Itinerary]:
             for sf in flight[2]:
                 d = sf[20]  # [yyyy, mm, dd]
                 iso = f"{d[0]:04d}-{d[1]:02d}-{d[2]:02d}" if d and len(d) >= 3 else ""
-                segs.append(_Seg(departure=iso, duration=sf[11]))
+                segs.append(
+                    _Seg(
+                        departure=iso,
+                        duration=sf[11],
+                        from_airport=sf[3],  # indices mirror the library parser
+                        to_airport=sf[6],
+                    )
+                )
             out.append(_Itinerary(int(round(price)), segs, list(flight[1] or [])))
         except (IndexError, TypeError, ValueError):
             continue  # one malformed itinerary must not cost the rest
@@ -318,8 +349,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
     best = min(priced, key=lambda r: r.price)
 
     segments = list(getattr(best, "flights", []) or [])
-    out_segs = [s for s in segments if _seg_date(s) == dep]
-    in_segs = [s for s in segments if _seg_date(s) == ret]
+    out_segs, in_segs = _split_legs(segments, origin.code, dest.code)
     airlines = list(getattr(best, "airlines", []) or [])
 
     return {
