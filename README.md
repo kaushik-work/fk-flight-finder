@@ -252,9 +252,17 @@ Rules carried over from the old spec, all of which were right:
 
 - **Never show an invented fare.** The old fixture provider refused to run in
   production for exactly this reason. Keep that refusal.
-- **Quote slightly high, not low.** Scraped fares read consistently below live
-  Google prices, so a display buffer was added per person. A traveller clicking
-  through to a *higher* number than advertised has been misled.
+- **No markup, and no buffer.** The price shown is the cheapest fare Google
+  returned for that date pair, rounded to whole rupees, passed through the
+  scraper, the store and the page untouched. Verified end to end.
+
+  The deleted implementation added a per-person display buffer, reasoning that
+  scraped fares read below live prices and a traveller clicking through to a
+  *higher* number has been misled. That was a fair argument and it was not
+  carried over — deliberately, on the view that honesty here is better served
+  by disclosure than by padding: every fare shows how old the observation is,
+  and the page says plainly it is not a live quote. Revisit if click-through
+  complaints suggest otherwise, but change the code and this line together.
 - **A month means the month you depart in.** The return may fall in the next
   month, and a 28 Sep → 3 Oct trip is an ordinary September holiday — often the
   cheaper one. Sample late-month, not just mid-month.
