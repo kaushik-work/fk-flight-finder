@@ -310,6 +310,71 @@ once then moves on rather than hammering a failing route. A real block looks
 different: every request failing, or a CAPTCHA page in place of results. The
 same rate was seen from a home connection, so it is the parser, not the IP.
 
+## Google Flights response formats
+
+Recorded 18 Sep 2026 from real responses, because these look like blocks and
+are not. **Do not re-derive this.**
+
+The data lives in a `<script class="ds:1">` tag as a JSON payload. The library
+reaches it via `payload[3][0]`, a list of itineraries. Five distinct shapes have
+been observed:
+
+| Shape | What it means | Handling |
+|---|---|---|
+| `payload[3][0]` is a list, every `k[1][0]` has ≥2 elements | normal, fully priced | parsed |
+| One or more `k[1][0] == []` | Google shows the option but will not price it | **skip that entry, keep the rest** |
+| `payload[3][0]` is `None` or `[]` | genuinely no flights on the route/date | no fares, not an error |
+| payload text ends `errorHasStatus: true` | Google returned an error state | raises `FlightsNotFound` |
+| no `script.ds:1` node at all | not a results page — consent wall, CAPTCHA, or a layout change | treat as a hard failure worth investigating |
+
+### The trap, and why it was expensive
+
+`fast_flights.parser.parse_js` does `price = k[1][0][1]` for every itinerary
+with no guard. A single unpriced entry raises `IndexError`, which aborts the
+whole parse and **throws away every priced itinerary in that response**.
+
+That is not a marginal loss. Measured on the 18 Sep pass:
+
+| Request | Itineraries | Priced | Returned before |
+|---|---|---|---|
+| BLR→DEL 2026-11-15 | 37 | 36 | nothing |
+| BLR→KIX 2026-10-28 | 6 | 5 | nothing |
+| BLR→DXB 2026-09-28 | — | 4 | nothing |
+
+31 of 225 requests (13.8%) failed this way, each discarding a full page of
+usable fares over one unpriced row.
+
+`_tolerant_parse()` in `scrape.py` re-parses the same payload and skips the
+unpriced entries. Verified recovery on all three cases above: 5, 36 and 4
+priced itineraries respectively, where the library returned none.
+
+### Payload field indices
+
+Mirrors the library's own parser. If Google changes the shape, both break
+together and the error points here.
+
+```
+entry[1][0][1]      price
+entry[0][1]         airlines
+entry[0][2]         segments
+  segment[3]        origin IATA        segment[6]   destination IATA
+  segment[8]        departure time     segment[10]  arrival time
+  segment[20]       departure date     segment[21]  arrival date  [yyyy, mm, dd]
+  segment[11]       duration, minutes  segment[17]  aircraft type
+entry[0][22][7]     carbon emission    [22][8]      typical for route
+payload[7][1][0]    alliances          payload[7][1][1]  airlines lookup
+```
+
+### Telling a parse problem from a block
+
+- `IndexError` on a handful of requests, priced results elsewhere in the same
+  pass → parser, not a block. Now recovered automatically; the log says
+  `~ recovered N priced via tolerant parse`.
+- `NO_SCRIPT_ds1`, or every request in a pass failing → investigate. That is
+  what an actual block looks like.
+- The same ~14% rate appeared from a home connection before the droplet
+  existed, which is how we know it is the parser and not the IP.
+
 ## Volume
 
 8 origins × 25 destinations × 9 date pairs = **1,800 requests per full pass**,

@@ -161,6 +161,79 @@ def _sum_duration(segments: list[Any]) -> int | None:
     return total if seen else None
 
 
+# ── Tolerant parse ───────────────────────────────────────────────────────────
+# fast_flights.parser.parse_js does `price = k[1][0][1]` for every itinerary in
+# the response. Google sometimes returns an itinerary with an empty price block
+# (`k[1][0] == []`) — an option it will show but not price. That single entry
+# raises IndexError, which aborts the parse and throws away EVERY result in the
+# response, including the priced ones.
+#
+# Measured on the 18 Sep 2026 pass: 31 of 225 requests failed this way, and the
+# losses were not small. BLR->DEL on 2026-11-15 carried 37 itineraries, 36 of
+# them priced, and returned nothing at all. BLR->KIX on 2026-10-28 had 6, five
+# priced, and returned nothing.
+#
+# So this re-parses the same payload and skips the unpriced entries instead of
+# discarding the page. Field indices mirror the library's own parser; if Google
+# changes the payload shape both will break together and the error will say so.
+
+class _Seg:
+    __slots__ = ("departure", "duration")
+
+    def __init__(self, departure: str, duration: Any) -> None:
+        self.departure = departure
+        self.duration = duration
+
+
+class _Itinerary:
+    __slots__ = ("price", "flights", "airlines")
+
+    def __init__(self, price: int, flights: list[_Seg], airlines: list[str]) -> None:
+        self.price = price
+        self.flights = flights
+        self.airlines = airlines
+
+
+def _tolerant_parse(query: Any) -> list[_Itinerary]:
+    """Re-parse a response the library rejected, skipping unpriced itineraries."""
+    from fast_flights.fetcher import fetch_flights_html
+    from selectolax.lexbor import LexborHTMLParser
+
+    html = fetch_flights_html(query)
+    html = getattr(html, "text", html)
+    node = LexborHTMLParser(html).css_first(r"script.ds\:1")
+    if node is None:
+        return []
+    raw = node.text().split("data:", 1)[1].rsplit(",", 1)[0]
+    if raw.endswith("errorHasStatus: true"):
+        return []
+    payload = json.loads(raw)
+
+    items = payload[3][0]
+    if not items:
+        return []
+
+    out: list[_Itinerary] = []
+    for entry in items:
+        try:
+            box = entry[1]
+            if not box or not isinstance(box[0], list) or len(box[0]) < 2:
+                continue  # the unpriced itinerary that breaks the library
+            price = box[0][1]
+            if not isinstance(price, (int, float)) or price <= 0:
+                continue
+            flight = entry[0]
+            segs: list[_Seg] = []
+            for sf in flight[2]:
+                d = sf[20]  # [yyyy, mm, dd]
+                iso = f"{d[0]:04d}-{d[1]:02d}-{d[2]:02d}" if d and len(d) >= 3 else ""
+                segs.append(_Seg(departure=iso, duration=sf[11]))
+            out.append(_Itinerary(int(round(price)), segs, list(flight[1] or [])))
+        except (IndexError, TypeError, ValueError):
+            continue  # one malformed itinerary must not cost the rest
+    return out
+
+
 def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, Any] | None:
     """Cheapest round-trip for one date pair, or None when there is nothing."""
     query = ff.create_query(
@@ -205,6 +278,17 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
                 return None
         except Exception as exc:  # noqa: BLE001 — one dead route must not end the run
             if attempt == 1:
+                # Before giving up, try the tolerant parse: an IndexError here
+                # is usually one unpriced itinerary taking the whole page down.
+                try:
+                    recovered = _tolerant_parse(query)
+                except Exception:  # noqa: BLE001
+                    recovered = []
+                if recovered:
+                    print(f"      ~ {origin.code}->{dest.code} {dep}: recovered "
+                          f"{len(recovered)} priced via tolerant parse", flush=True)
+                    results = recovered
+                    break
                 print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}", flush=True)
                 return None
             time.sleep(DELAY)
