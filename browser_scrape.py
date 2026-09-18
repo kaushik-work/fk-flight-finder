@@ -1,39 +1,48 @@
-"""Google Flights through a real browser. Diagnostic tool, not part of the
-nightly run.
+"""Google Flights through a real browser. Diagnostic tool, not yet part of
+the nightly run.
 
-What this was built to test, and what it proved
-----------------------------------------------
+The 10% price gap, and what actually causes it
+---------------------------------------------
 Our stored fares ran about 10% above what Google shows a person:
 
     BLR->DXB 2027-01-28   ours 24,267   Google 21,596   +12.4%
     BLR->SIN 2026-10-28   ours 33,589   Google 30,660   +9.6%
 
-The first theory was that fast_flights hits a protobuf endpoint returning a
-worse result set than the rendered page, and that a browser which waits for
-the page to settle and opens the "Cheapest" tab would see the real prices.
+Always high, which is the worst direction to be wrong in.
 
-That theory is wrong, and this module is the evidence. Running it on the
-droplet returns 24,267 — the same figure the protobuf gives. Sampling the
-page at 3, 6, 10, 15, 20, 30 and 45 seconds returns 24,267 every time, with
-"Fetching results" gone by 20s. Waiting changes nothing.
+Measured on 18 Sep 2026, same route and date pair, within minutes, cheapest
+round trip returned:
 
-The actual variable is the egress IP. Same URL, same minute:
+                        protobuf      browser (Cheapest tab clicked)
+    home IP              24,267        21,320  -> 22,171 / 22,719
+    DigitalOcean BLR     24,267        24,267
 
-    home connection      21,320  24,267  25,864  31,733  34,267  41,976
-    DigitalOcean BLR             24,267  25,864  31,733  34,267
+Three findings, each verified rather than assumed:
 
-The droplet is served a strict subset. Every price it sees is on the home
-list; the cheapest tier is withheld. Google prunes cheap fares for datacenter
-IPs, and it does so whichever client asks — browser or protobuf.
+1. The protobuf endpoint never returns the cheap tier, from any IP. It sends
+   4 itineraries; dumping the full payload and scanning every integer, the
+   lowest value present is 24,000.
+2. The browser does see it, but only from a residential IP. On the droplet
+   the rendered page returns the same pruned set as the protobuf.
+3. Clicking "Cheapest" is not cosmetic. On the home IP it surfaced 22,171 and
+   22,719, neither of which was on the page under the default "Best" tab.
 
-So the fix is egress, not parsing and not patience: route the existing fast
-scraper through a residential IP via PROXY_URLS, which scrape.py already
-rotates. At 2.04 MB per query and 1,728 queries a night — 3.44 GB nightly,
-~103 GB a month — per-GB rotating residential proxies are not viable; the
-product that fits is a static residential (ISP) proxy priced per IP.
+Ruled out along the way: waiting (sampled at 3/6/10/15/20/30/45s on the
+droplet, 24,267 at every point, "Fetching results" gone by 20s); user agent
+(droplet with a macOS UA, click confirmed via aria-selected, still 24,267);
+and personalisation (a logged-out browser still sees the cheap tier).
 
-Keep this module for re-checking the gap from any given egress after a proxy
-is in place, and for spot-checking a suspicious fare by hand.
+So all three are required together: a browser, a residential egress, and the
+Cheapest tab. Any two without the third leaves us at 24,267.
+
+Cost of that, before committing to it: the browser needs roughly 30s per
+query against 5s now, so the full 1,728-query matrix runs ~15h rather than
+2.4h and no longer fits a nightly window. Either the matrix shrinks, or this
+runs only for each route's headline date while the protobuf keeps the rest.
+
+Unverified: whether a bought residential proxy actually restores the cheap
+tier. Only a real IP can answer that, and it should be tested on a small
+trial before any plan is paid for.
 """
 
 from __future__ import annotations
