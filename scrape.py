@@ -178,6 +178,32 @@ def _sum_duration(segments: list[Any]) -> int | None:
     return total if seen else None
 
 
+def _seg_time(segment: Any, which: str) -> str | None:
+    """Local clock time of one leg's departure or arrival, as "HH:MM".
+
+    The library hands back SimpleDatetime(date=(y, m, d), time=(hh, mm)), so
+    the tuple is read directly — str() on it yields the dataclass repr, which
+    is the trap the leg-date bug fell into.
+    """
+    raw = getattr(segment, which, None)
+    if raw is None:
+        return None
+    parts = getattr(raw, "time", None)
+    if isinstance(parts, (tuple, list)) and len(parts) >= 2:
+        try:
+            return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+        except (TypeError, ValueError):
+            return None
+    if isinstance(raw, str):  # the tolerant path already yields a string
+        return raw
+    return None
+
+
+def _seg_aircraft(segment: Any) -> str | None:
+    plane = getattr(segment, "plane_type", None)
+    return plane if isinstance(plane, str) and plane.strip() else None
+
+
 def _seg_airports(segment: Any) -> tuple[str | None, str | None]:
     """(from, to) IATA codes for one leg, from either parse path."""
     frm = getattr(segment, "from_airport", None)
@@ -238,16 +264,34 @@ def _split_legs(
 # discarding the page. Field indices mirror the library's own parser; if Google
 # changes the payload shape both will break together and the error will say so.
 
+def _clock(raw: Any) -> str | None:
+    """"HH:MM" from the raw [hh, mm] the payload carries, or None."""
+    if isinstance(raw, (tuple, list)) and len(raw) >= 2:
+        try:
+            return f"{int(raw[0]):02d}:{int(raw[1] or 0):02d}"
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 class _Seg:
-    __slots__ = ("departure", "duration", "from_airport", "to_airport")
+    __slots__ = ("departure", "arrival", "duration", "from_airport", "to_airport", "plane_type")
 
     def __init__(
-        self, departure: str, duration: Any, from_airport: str | None, to_airport: str | None
+        self,
+        departure: str,
+        duration: Any,
+        from_airport: str | None,
+        to_airport: str | None,
+        arrival: str | None = None,
+        plane_type: str | None = None,
     ) -> None:
         self.departure = departure
+        self.arrival = arrival
         self.duration = duration
         self.from_airport = from_airport
         self.to_airport = to_airport
+        self.plane_type = plane_type
 
 
 class _Itinerary:
@@ -290,19 +334,45 @@ def _tolerant_parse(query: Any) -> list[_Itinerary]:
             flight = entry[0]
             segs: list[_Seg] = []
             for sf in flight[2]:
-                d = sf[20]  # [yyyy, mm, dd]
-                iso = f"{d[0]:04d}-{d[1]:02d}-{d[2]:02d}" if d and len(d) >= 3 else ""
                 segs.append(
                     _Seg(
-                        departure=iso,
+                        departure=_clock(sf[8]),
+                        arrival=_clock(sf[10]),
                         duration=sf[11],
                         from_airport=sf[3],  # indices mirror the library parser
                         to_airport=sf[6],
+                        plane_type=sf[17] if len(sf) > 17 else None,
                     )
                 )
             out.append(_Itinerary(int(round(price)), segs, list(flight[1] or [])))
         except (IndexError, TypeError, ValueError):
             continue  # one malformed itinerary must not cost the rest
+    return out
+
+
+def _describe(segments: list[Any]) -> list[dict[str, Any]]:
+    """Each leg as a plain dict, in order.
+
+    The site only ever showed a stop count and a total duration, which is
+    enough to sort by but not enough to decide on: "1 stop" says nothing about
+    whether the connection is in Bahrain at 3am. The payload already carries
+    departure and arrival times, both airport codes and the aircraft on every
+    leg, so they are kept rather than thrown away.
+
+    Flight numbers and terminals are not here because Google does not send
+    them on this endpoint — neither is recoverable, so neither is promised.
+    """
+    out: list[dict[str, Any]] = []
+    for seg in segments:
+        frm, to = _seg_airports(seg)
+        out.append({
+            "from": frm,
+            "to": to,
+            "departTime": _seg_time(seg, "departure"),
+            "arriveTime": _seg_time(seg, "arrival"),
+            "durationMinutes": getattr(seg, "duration", None) if isinstance(getattr(seg, "duration", None), int) else None,
+            "aircraft": _seg_aircraft(seg),
+        })
     return out
 
 
@@ -376,6 +446,8 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
 
     return {
         "price": int(round(best.price)),
+        "outLegs": _describe(out_segs),
+        "inLegs": _describe(in_segs),
         "outStops": max(len(out_segs) - 1, 0) if out_segs else None,
         "inStops": max(len(in_segs) - 1, 0) if in_segs else None,
         "outDuration": _sum_duration(out_segs),
@@ -410,12 +482,14 @@ def to_fare(origin: Place, dest: Place, dep: str, ret: str, fare: dict[str, Any]
             "from": origin.code, "to": dest.code, "date": dep,
             "stops": fare["outStops"],
             "durationMinutes": fare["outDuration"],
+            "legs": fare.get("outLegs") or [],
             "airlineName": fare["airline"],
         },
         "inbound": {
             "from": dest.code, "to": origin.code, "date": ret,
             "stops": fare["inStops"],
             "durationMinutes": fare["inDuration"],
+            "legs": fare.get("inLegs") or [],
             "airlineName": fare["airline"],
         },
         "deepLink": deep_link,
