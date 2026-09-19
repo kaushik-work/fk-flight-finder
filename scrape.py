@@ -77,9 +77,26 @@ SECRET = os.environ.get("FARE_INGEST_SECRET", "")
 # which is what puts November and December on the page in September.
 MONTHS_AHEAD = int(os.environ.get("SCRAPE_MONTHS", "4"))
 
-# Trip length. Must match the cap the frontend enforces, or we store cards no
-# search can return. See README.
-NIGHTS = int(os.environ.get("SCRAPE_NIGHTS", "5"))
+# Trip lengths, in nights. Every value here multiplies the request count, so
+# this is the most expensive dial in the file: three lengths is three passes
+# over the whole origin x destination x date matrix.
+#
+# 5 leads because it is the default the board offers and the one most people
+# search. 3 and 7 bracket it — a long weekend and a full week — which is the
+# range the trip-length control exposes. Sampling every value from 3 to 7 is
+# not worth 5x the runtime: 4 and 6 price within a few hundred rupees of their
+# neighbours on these routes, and the control snaps to the nearest length we
+# actually hold rather than showing an empty page.
+NIGHTS_LIST = sorted({
+    int(n) for n in os.environ.get("SCRAPE_NIGHTS", "3,5,7").split(",") if n.strip()
+})
+
+# The length the board defaults to, and the only one sampled on every departure
+# day. Sampling all three lengths on both days would be 27 pairs per route and
+# a 7.2h run, which overruns the 07:00 deadline from a 01:00 start. The
+# alternates get one departure a month instead, so 5 nights keeps the date
+# breadth people actually browse and 3 and 7 still exist in every month.
+PRIMARY_NIGHTS = int(os.environ.get("SCRAPE_PRIMARY_NIGHTS", "5"))
 
 # Departure days sampled per month. 28 is deliberate: a 28 Sep -> 3 Oct trip is
 # an ordinary September holiday and often the cheaper one, and a mid-month-only
@@ -135,7 +152,12 @@ def sample_dates() -> list[tuple[str, str]]:
             # Three days' notice; sooner is rarely bookable at a sane fare.
             if dep <= today + timedelta(days=3):
                 continue
-            out.append((dep.isoformat(), (dep + timedelta(days=NIGHTS)).isoformat()))
+            for nights in NIGHTS_LIST:
+                # Alternates are sampled on the first departure day of the
+                # month only; see PRIMARY_NIGHTS.
+                if nights != PRIMARY_NIGHTS and day != SAMPLE_DAYS[0]:
+                    continue
+                out.append((dep.isoformat(), (dep + timedelta(days=nights)).isoformat()))
     return sorted(set(out))
 
 
@@ -442,7 +464,8 @@ def main() -> int:
 
     date_pairs = sample_dates()
     months = sorted({dep[:7] for dep, _ in date_pairs})
-    print(f"{len(origins)} origins x {len(dests)} destinations x {len(date_pairs)} date pairs")
+    print(f"{len(origins)} origins x {len(dests)} destinations x {len(date_pairs)} date pairs "
+          f"(trip lengths: {', '.join(str(n) for n in NIGHTS_LIST)} nights)")
     print(f"months: {', '.join(months)}")
     print(f"~{len(origins) * len(dests) * len(date_pairs)} requests, ~{DELAY}s apart"
           f"{' via ' + str(len(PROXY_URLS)) + ' proxies' if PROXY_URLS else ' direct'}\n", flush=True)
