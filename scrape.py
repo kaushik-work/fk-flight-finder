@@ -376,8 +376,8 @@ def _describe(segments: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, Any] | None:
-    """Cheapest round-trip for one date pair, or None when there is nothing."""
+def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> list[Any]:
+    """Priced itineraries Google returns for one date pair at one stop cap."""
     query = ff.create_query(
         flights=[
             ff.FlightQuery(date=dep, from_airport=origin.code, to_airport=dest.code),
@@ -388,7 +388,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
         passengers=ff.Passengers(adults=1),
         currency="INR",
         language="en-US",
-        max_stops=MAX_STOPS,
+        max_stops=max_stops,
     )
 
     # One retry. Failures here are mostly transient — Google occasionally serves
@@ -406,7 +406,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
             results = list(ff.get_flights(query, **kwargs) if kwargs else ff.get_flights(query))
             break
         except ff.FlightsNotFound:
-            return None  # genuinely no flights; not an error worth logging
+            return []  # genuinely no flights; not an error worth logging
         except TypeError:
             # This fast-flights build does not accept a proxy argument. Say so
             # once, loudly, rather than silently scraping direct while the
@@ -417,7 +417,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
                 results = list(ff.get_flights(query))
                 break
             except Exception:
-                return None
+                return []
         except Exception as exc:  # noqa: BLE001 — one dead route must not end the run
             if attempt == 1:
                 # Before giving up, try the tolerant parse: an IndexError here
@@ -432,10 +432,30 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
                     results = recovered
                     break
                 print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}", flush=True)
-                return None
+                return []
             time.sleep(DELAY)
 
-    priced = [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
+    return [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
+
+
+def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, Any] | None:
+    """Cheapest round-trip for one date pair, or None when there is nothing.
+
+    Two queries, cheapest across both. Google answers each with only a handful
+    of itineraries, ranked by its own idea of "best" rather than by price, and
+    with a stop cap of 2 that handful is dominated by odd connections. Measured
+    30 Sep 2026, BLR->KUL 15-18 Nov: max_stops=2 returned three fares, all
+    connecting, cheapest Vietjet via SGN at 61,372; max_stops=0 on the same
+    pair returned four non-stops from 30,083 (AirAsia). The board showed no
+    direct flight and a price double the real one. A non-stop-only query
+    surfaces the direct flights; the capped query keeps the cheap connections
+    that beat a non-stop on long-haul routes.
+    """
+    priced: list[Any] = []
+    for i, cap in enumerate(sorted({0, MAX_STOPS})):
+        if i:
+            time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
+        priced.extend(_search(origin, dest, dep, ret, cap))
     if not priced:
         return None
     best = min(priced, key=lambda r: r.price)
