@@ -11,4 +11,10 @@ DEST=/opt/fk-flight-finder
 
 scp -i "$KEY" scrape.py routes.json run.sh "$HOST:$DEST/"
 ssh -i "$KEY" "$HOST" "chmod +x $DEST/run.sh && cd $DEST && ./.venv/bin/python -c 'import ast;ast.parse(open(\"scrape.py\").read());print(\"scrape.py parses\")'"
-echo "deployed to $HOST:$DEST"
+
+# A running pass has already loaded the old scrape.py and holds the flock, so
+# cron cannot start a new one. Stop it; the next hourly cron firing (or the
+# kick below) starts a pass on the new code. Partial results from the killed
+# pass are discarded by design: the write is replace-per-origin.
+ssh -i "$KEY" "$HOST" "pkill -f 'python scrape.py' || true; sleep 2; rm -f /var/lock/fk-flight-finder.started; nohup $DEST/run.sh >/dev/null 2>&1 &"
+echo "deployed to $HOST:$DEST and restarted the pass"
