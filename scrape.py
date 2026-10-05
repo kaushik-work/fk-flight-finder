@@ -157,7 +157,7 @@ MAX_PRICE = 400_000
 # Requests actually sent to Google this pass, printed at the end so the health
 # baselines in the README can be compared against a number, not a feeling.
 STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
-         "timeouts": 0, "rejected_prices": 0, "failed": 0}
+         "timeouts": 0, "rejected_prices": 0, "failed": 0, "captcha": 0}
 
 # Share of an origin's queries that may fail outright (timeout or unreadable,
 # after the retry) before its fares are withheld. The backend replaces an
@@ -207,6 +207,16 @@ try:
 except ImportError:  # pragma: no cover
     class _HttpTimeout(Exception):  # type: ignore[no-redef]
         pass
+
+
+def _is_captcha(html: str) -> bool:
+    """Google's "unusual traffic" interstitial, served in place of the results.
+
+    Seen live on 5 Oct 2026: a 3.6KB page with a reCAPTCHA form, no data block.
+    It parses as unreadable either way; naming it in the log is what tells an
+    operator to slow down rather than to go looking for a payload change.
+    """
+    return "captcha-form" in html or "detected unusual traffic" in html
 
 
 def _fetch_html(query: Any, proxy: str | None) -> str:
@@ -439,7 +449,12 @@ def _tolerant_parse(html: str) -> list[_Itinerary]:
         return []
     payload = json.loads(raw)
 
-    items = payload[3][0]
+    # A search with nothing to show (e.g. non-stop only on a route nobody
+    # flies direct) sends the results slot as null. That is an answer — no
+    # flights — not a broken page; the library crashes on it with TypeError,
+    # and it used to be counted as unreadable, as if Google had blocked us.
+    results_slot = payload[3] if len(payload) > 3 else None
+    items = results_slot[0] if results_slot else None
     if not items:
         return []
 
@@ -601,6 +616,17 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             time.sleep(DELAY)
             continue
 
+        if _is_captcha(html):
+            STATS["captcha"] += 1
+            _breaker_bad()
+            if last:
+                STATS["unreadable"] += 1
+                STATS["failed"] += 1
+                print(f"      ! {origin.code}->{dest.code} {dep}: CAPTCHA (Google is rate-limiting this IP)", flush=True)
+                return []
+            time.sleep(DELAY)
+            continue
+
         try:
             results = list(parse(html))
             _breaker_ok()
@@ -632,7 +658,8 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             # "empty": the payload parsed and held no priced flight — an
             # ordinary route with no service. Asking again will not change it.
             STATS["empty"] += 1
-            print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, tolerant parse empty", flush=True)
+            stops = "non-stop" if max_stops == 0 else f"up to {max_stops} stops"
+            print(f"      - {origin.code}->{dest.code} {dep}: no flights ({stops})", flush=True)
             return []
 
     priced = [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
@@ -805,7 +832,7 @@ def main() -> int:
     print(f"done in {report['seconds']}s | requests={STATS['requests']} "
           f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
           f"unreadable={STATS['unreadable']} empty={STATS['empty']} timeouts={STATS['timeouts']} "
-          f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']}" + (" BLOCKED" if report["blocked"] else ""))
+          f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']} captcha={STATS['captcha']}" + (" BLOCKED" if report["blocked"] else ""))
     return 3 if report["blocked"] else 0
 
 

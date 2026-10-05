@@ -23,7 +23,6 @@ import scrape  # noqa: E402
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 BLR = scrape.Place("bangalore", "BLR", "Bengaluru", "India")
 KUL = scrape.Place("kuala-lumpur", "KUL", "Kuala Lumpur", "Malaysia")
-CAPTCHA = "<html><body>Our systems have detected unusual traffic from your computer network.</body></html>"
 
 
 def fixture(name: str) -> str:
@@ -38,6 +37,9 @@ def edit_payload(html: str, fn) -> str:
     payload = json.loads(raw)
     fn(payload)
     return head + "data:" + json.dumps(payload) + sep + tail
+
+
+CAPTCHA = fixture("captcha")  # the real interstitial, IP and tokens removed
 
 
 class Base(unittest.TestCase):
@@ -126,13 +128,30 @@ class DamagedResponses(Base):
         self.assertNotIn(99, [r.price for r in got])
         self.assertEqual(scrape.STATS["rejected_prices"], 1)
 
+    def test_no_nonstop_service_is_empty_not_a_failure(self):
+        # Live PNQ->HKT non-stop query, 5 Oct 2026: nobody flies it direct and
+        # Google answers with a null results slot. The library crashes on it;
+        # it must count as an empty route — no retry, no failure, no breaker.
+        self.pages = [fixture("pnq_hkt_nonstop_empty")]
+        pnq, hkt = scrape.Place("pune", "PNQ", "Pune"), scrape.Place("phuket", "HKT", "Phuket")
+        self.assertEqual(scrape._search(pnq, hkt, "2026-11-15", "2026-11-18", 0), [])
+        self.assertEqual(self.fetches, 1)
+        self.assertEqual(scrape.STATS["failed"], 0)
+        self.assertEqual(scrape.STATS["empty"], 1)
+        self.assertEqual(scrape.BREAKER["streak"], 0)
+
     def test_captcha_page_is_a_failure_not_an_empty_route(self):
         self.pages = [CAPTCHA, CAPTCHA]
         self.assertEqual(scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 0), [])
         self.assertEqual(self.fetches, 2)  # one retry
         self.assertEqual(scrape.STATS["failed"], 1)
         self.assertEqual(scrape.STATS["unreadable"], 1)
+        self.assertEqual(scrape.STATS["captcha"], 2)
         self.assertEqual(scrape.BREAKER["streak"], 2)
+
+    def test_real_results_page_is_not_mistaken_for_captcha(self):
+        for name in ("blr_kul_nonstop", "blr_kul_2stop"):
+            self.assertFalse(scrape._is_captcha(fixture(name)), name)
 
     def test_captcha_then_good_page_recovers(self):
         self.pages = [CAPTCHA, fixture("blr_kul_nonstop")]
