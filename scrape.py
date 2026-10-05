@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import random
+import signal
 import sys
 import time
 import urllib.error
@@ -126,9 +127,43 @@ DEAD_AFTER = int(os.environ.get("SCRAPE_DEAD_AFTER", "3"))
 # is generated.
 SKIP_ROUTES = {("PNQ", "BOM"), ("BOM", "PNQ")}
 
+# A request that has not answered in this long is hung, not slow. The library
+# sets no timeout of its own, and one hung socket used to stall the whole pass
+# until the 20h stuck-warning in run.sh — hours of silence for one request.
+REQUEST_TIMEOUT = int(os.environ.get("SCRAPE_REQUEST_TIMEOUT", "75"))
+
+# Circuit breaker. Consecutive responses we could not read at all are the
+# signature of a block or a payload change, not of empty routes. Past
+# BREAKER_PAUSE the pass sleeps once and tries again; past BREAKER_ABORT it
+# stops and leaves the stored fares alone. Hammering through a CAPTCHA wall is
+# how an IP gets burned for days, and a pass of garbage is worse than no pass.
+BREAKER_PAUSE = int(os.environ.get("SCRAPE_BREAKER_PAUSE", "8"))
+BREAKER_ABORT = int(os.environ.get("SCRAPE_BREAKER_ABORT", "16"))
+BREAKER_COOLDOWN = int(os.environ.get("SCRAPE_BREAKER_COOLDOWN", "1200"))
+
+# A round trip outside this range is a parse error, not a fare. The floor is
+# below the cheapest real domestic return; the ceiling is above any economy
+# long-haul return we price.
+MIN_PRICE = 1500
+MAX_PRICE = 400_000
+
 # Requests actually sent to Google this pass, printed at the end so the health
 # baselines in the README can be compared against a number, not a feeling.
-STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0}
+STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
+         "timeouts": 0, "rejected_prices": 0}
+BREAKER = {"streak": 0, "tripped": 0}
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _on_alarm(signum: int, frame: Any) -> None:  # noqa: ARG001
+    raise _Timeout()
+
+
+class Blocked(Exception):
+    """Too many unreadable responses in a row; the pass should stop."""
 
 
 @dataclass(frozen=True)
@@ -445,10 +480,24 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             kwargs: dict[str, Any] = {}
             if proxy:
                 kwargs["proxy"] = proxy
-            results = list(ff.get_flights(query, **kwargs) if kwargs else ff.get_flights(query))
+            signal.signal(signal.SIGALRM, _on_alarm)
+            signal.alarm(REQUEST_TIMEOUT)
+            try:
+                results = list(ff.get_flights(query, **kwargs) if kwargs else ff.get_flights(query))
+            finally:
+                signal.alarm(0)
+            BREAKER["streak"] = 0
             break
         except ff.FlightsNotFound:
+            BREAKER["streak"] = 0
             return []  # genuinely no flights; not an error worth logging
+        except _Timeout:
+            STATS["timeouts"] += 1
+            if attempt == 1:
+                print(f"      ! {origin.code}->{dest.code} {dep}: no answer in {REQUEST_TIMEOUT}s", flush=True)
+                BREAKER["streak"] += 1
+                return []
+            time.sleep(DELAY)
         except TypeError:
             # This fast-flights build does not accept a proxy argument. Say so
             # once, loudly, rather than silently scraping direct while the
@@ -474,17 +523,29 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
                     print(f"      ~ {origin.code}->{dest.code} {dep}: recovered "
                           f"{len(recovered)} priced via tolerant parse", flush=True)
                     results = recovered
+                    BREAKER["streak"] = 0
                     break
                 # "empty" means the payload parsed and held no priced flight — an
                 # ordinary route with no service. "unreadable" means we could not
                 # parse it at all, which is the one that signals a block or a
                 # payload change. They used to log identically.
-                STATS["unreadable" if tolerant.startswith("unreadable") else "empty"] += 1
+                if tolerant.startswith("unreadable"):
+                    STATS["unreadable"] += 1
+                    BREAKER["streak"] += 1
+                else:
+                    STATS["empty"] += 1
+                    BREAKER["streak"] = 0
                 print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, tolerant parse {tolerant}", flush=True)
                 return []
             time.sleep(DELAY)
 
-    return [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
+    priced = [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
+    sane = [r for r in priced if MIN_PRICE <= r.price <= MAX_PRICE]
+    if len(sane) != len(priced):
+        STATS["rejected_prices"] += len(priced) - len(sane)
+        print(f"      ! {origin.code}->{dest.code} {dep}: dropped {len(priced) - len(sane)} "
+              f"price(s) outside INR {MIN_PRICE:,}-{MAX_PRICE:,}", flush=True)
+    return sane
 
 
 def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteState | None = None) -> dict[str, Any] | None:
@@ -627,6 +688,27 @@ def main() -> int:
           f"{' via ' + str(len(PROXY_URLS)) + ' proxies' if PROXY_URLS else ' direct'}\n", flush=True)
 
     started = time.time()
+    report: dict[str, Any] = {"startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "origins": {}, "blocked": False}
+    try:
+        _run_origins(origins, dests, date_pairs, args, report)
+    except Blocked:
+        report["blocked"] = True
+    report["seconds"] = int(time.time() - started)
+    report["stats"] = dict(STATS)
+    try:
+        with open(os.path.join(HERE, "last_pass.json"), "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
+    except OSError:
+        pass
+    print(f"done in {report['seconds']}s | requests={STATS['requests']} "
+          f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
+          f"unreadable={STATS['unreadable']} empty={STATS['empty']} timeouts={STATS['timeouts']} "
+          f"rejected_prices={STATS['rejected_prices']}" + (" BLOCKED" if report["blocked"] else ""))
+    return 3 if report["blocked"] else 0
+
+
+def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tuple[str, str]],
+                 args: argparse.Namespace, report: dict[str, Any]) -> None:
     for origin in origins:
         print(f"[{origin.slug}] {origin.code}", flush=True)
         fares: list[dict[str, Any]] = []
@@ -644,6 +726,16 @@ def main() -> int:
                     print(f"   {dest.code} — no fares in {DEAD_AFTER} date pairs running, skipping {left} more", flush=True)
                     break
                 fare = scrape_route(origin, dest, dep, ret, state)
+                if BREAKER["streak"] >= BREAKER_ABORT or (BREAKER["streak"] >= BREAKER_PAUSE and BREAKER["tripped"]):
+                    print(f"   ! {BREAKER['streak']} unreadable responses in a row after a cooldown: "
+                          "Google is blocking us or the payload changed. Stopping, stored fares untouched.", flush=True)
+                    raise Blocked()
+                if BREAKER["streak"] >= BREAKER_PAUSE:
+                    BREAKER["tripped"] += 1
+                    print(f"   ! {BREAKER['streak']} unreadable responses in a row: cooling down "
+                          f"{BREAKER_COOLDOWN // 60} min before trying again", flush=True)
+                    time.sleep(BREAKER_COOLDOWN)
+                    BREAKER["streak"] = 0
                 time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
                 if fare:
                     found.append((dep, ret, fare))
@@ -660,16 +752,12 @@ def main() -> int:
 
         if fares:
             ok = post_fares(origin.slug, fares, args.dry_run)
+            report["origins"][origin.slug] = {"fares": len(fares), "stored": ok}
             print(f"   -> {len(fares)} fares, stored={ok}\n", flush=True)
         else:
             # Leaves the previous fares in place. An outage must look like stale
             # prices, never like no flights.
             print("   -> nothing usable; leaving stored fares alone\n", flush=True)
-
-    print(f"done in {int(time.time() - started)}s | requests={STATS['requests']} "
-          f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
-          f"unreadable={STATS['unreadable']} empty={STATS['empty']}")
-    return 0
 
 
 if __name__ == "__main__":

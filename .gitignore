@@ -12,3 +12,4 @@ __pycache__/
 # Scraper output / logs
 *.log
 out/
+last_pass.json
