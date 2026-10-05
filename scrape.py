@@ -157,7 +157,8 @@ MAX_PRICE = 400_000
 # Requests actually sent to Google this pass, printed at the end so the health
 # baselines in the README can be compared against a number, not a feeling.
 STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
-         "timeouts": 0, "rejected_prices": 0, "failed": 0, "captcha": 0}
+         "timeouts": 0, "rejected_prices": 0, "failed": 0, "captcha": 0,
+         "nonstop_cheaper": 0}
 
 # Share of an origin's queries that may fail outright (timeout or unreadable,
 # after the retry) before its fares are withheld. The backend replaces an
@@ -376,7 +377,10 @@ def _split_legs(
     return out, inbound
 
 
-# ── Tolerant parse ───────────────────────────────────────────────────────────
+# ── Page parse ───────────────────────────────────────────────────────────────
+# Our own parser, used for every page (see _parse_page for the block the
+# library never reads). The history of why it exists at all:
+#
 # fast_flights.parser.parse_js does `price = k[1][0][1]` for every itinerary in
 # the response. Google sometimes returns an itinerary with an empty price block
 # (`k[1][0] == []`) — an option it will show but not price. That single entry
@@ -388,18 +392,24 @@ def _split_legs(
 # them priced, and returned nothing at all. BLR->KIX on 2026-10-28 had 6, five
 # priced, and returned nothing.
 #
-# So this re-parses the same payload and skips the unpriced entries instead of
+# So this parses the payload itself and skips the unpriced entries instead of
 # discarding the page. Field indices mirror the library's own parser; if Google
 # changes the payload shape both will break together and the error will say so.
 
 def _clock(raw: Any) -> str | None:
-    """"HH:MM" from the raw [hh, mm] the payload carries, or None."""
-    if isinstance(raw, (tuple, list)) and len(raw) >= 2:
-        try:
-            return f"{int(raw[0]):02d}:{int(raw[1] or 0):02d}"
-        except (TypeError, ValueError):
-            return None
-    return None
+    """"HH:MM" from the raw time the payload carries, or None.
+
+    Google drops zero components: [None, 20] is 00:20 and [2] is 02:00. Both
+    used to come back None, so any flight leaving between midnight and 1am, or
+    on the hour, lost its time.
+    """
+    if not isinstance(raw, (tuple, list)) or not raw:
+        return None
+    hh, mm = (list(raw) + [None, None])[:2]
+    try:
+        return f"{int(hh or 0):02d}:{int(mm or 0):02d}"
+    except (TypeError, ValueError):
+        return None
 
 
 class _Seg:
@@ -431,11 +441,20 @@ class _Itinerary:
         self.airlines = airlines
 
 
-def _tolerant_parse(html: str) -> list[_Itinerary]:
-    """Re-parse a response the library rejected, skipping unpriced itineraries.
+def _parse_page(html: str) -> list[_Itinerary]:
+    """Every priced itinerary on a results page.
 
-    Takes the HTML already fetched; it used to fetch the page again, a third
-    request per failing pair that also skipped the delay between requests.
+    This is the parser, not a fallback. The library's reads only payload[3]
+    ("other flights"). When Google splits the list, payload[2] ("best
+    flights") holds the rest — and on BLR->KUL 15-18 Nov, 5 Oct 2026, it held
+    every non-stop, AirAsia at 29,828 included, while payload[3] held only the
+    connections from 38,690 up. Reading one block is what published 61,372
+    via Saigon on a route flown non-stop for half that.
+
+    Also skips unpriced itineraries instead of failing the page (the library
+    raises on one, losing every priced result with it), and returns [] for a
+    page Google answered with no flights. Raises ValueError for a page with no
+    data block at all, which is a block, not an answer.
     """
     from selectolax.lexbor import LexborHTMLParser
 
@@ -450,11 +469,14 @@ def _tolerant_parse(html: str) -> list[_Itinerary]:
     payload = json.loads(raw)
 
     # A search with nothing to show (e.g. non-stop only on a route nobody
-    # flies direct) sends the results slot as null. That is an answer — no
-    # flights — not a broken page; the library crashes on it with TypeError,
-    # and it used to be counted as unreadable, as if Google had blocked us.
-    results_slot = payload[3] if len(payload) > 3 else None
-    items = results_slot[0] if results_slot else None
+    # flies direct) sends both blocks as null. That is an answer — no flights
+    # — not a broken page; the library crashes on it with TypeError, and it
+    # used to be counted as unreadable, as if Google had blocked us.
+    items: list[Any] = []
+    for slot in (2, 3):
+        block = payload[slot] if len(payload) > slot else None
+        if block and block[0]:
+            items.extend(block[0])
     if not items:
         return []
 
@@ -587,11 +609,6 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
     # same query usually succeeds moments later. A pair that fails twice is
     # skipped rather than retried harder; hammering a failing route is how an
     # IP starts collecting CAPTCHAs.
-    #
-    # A page the library cannot parse is first handed to the tolerant parse,
-    # from the same HTML: usually one unpriced itinerary taking the page down.
-    from fast_flights.parser import parse
-
     results: list[Any] = []
     for attempt in (0, 1):
         last = attempt == 1
@@ -628,39 +645,27 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             continue
 
         try:
-            results = list(parse(html))
-            _breaker_ok()
-            break
-        except ff.FlightsNotFound:
-            _breaker_ok()
-            return []  # genuinely no flights; not an error worth logging
+            results = _parse_page(html)
         except Exception as exc:  # noqa: BLE001
-            try:
-                recovered = _tolerant_parse(html)
-            except Exception as terr:  # noqa: BLE001
-                # "unreadable": no parse of this page works at all, the one
-                # that signals a block or a payload change. Worth one retry.
-                _breaker_bad()
-                if last:
-                    STATS["unreadable"] += 1
-                    STATS["failed"] += 1
-                    print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, "
-                          f"tolerant parse unreadable ({type(terr).__name__})", flush=True)
-                    return []
-                time.sleep(DELAY)
-                continue
-            _breaker_ok()
-            if recovered:
-                print(f"      ~ {origin.code}->{dest.code} {dep}: recovered "
-                      f"{len(recovered)} priced via tolerant parse", flush=True)
-                results = recovered
-                break
-            # "empty": the payload parsed and held no priced flight — an
-            # ordinary route with no service. Asking again will not change it.
+            # "unreadable": a page with no usable data block, the one that
+            # signals a block or a payload change. Worth one retry.
+            _breaker_bad()
+            if last:
+                STATS["unreadable"] += 1
+                STATS["failed"] += 1
+                print(f"      ! {origin.code}->{dest.code} {dep}: unreadable ({type(exc).__name__})", flush=True)
+                return []
+            time.sleep(DELAY)
+            continue
+        _breaker_ok()
+        if not results:
+            # "empty": the page parsed and held no priced flight — an ordinary
+            # route with no service. Asking again will not change it.
             STATS["empty"] += 1
             stops = "non-stop" if max_stops == 0 else f"up to {max_stops} stops"
             print(f"      - {origin.code}->{dest.code} {dep}: no flights ({stops})", flush=True)
             return []
+        break
 
     priced = [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
     sane = [r for r in priced if MIN_PRICE <= r.price <= MAX_PRICE]
@@ -689,6 +694,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     first = True
     nonstop_found = False
     nonstop_asked = False
+    cheapest: dict[int, int] = {}
     for cap in sorted({0, MAX_STOPS}):
         if cap == 0 and state.nonstop_dead and MAX_STOPS != 0:
             STATS["skipped_nonstop"] += 1
@@ -700,7 +706,18 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
         if cap == 0:
             nonstop_asked = True
             nonstop_found = bool(got)
+        if got:
+            cheapest[cap] = min(r.price for r in got)
         priced.extend(got)
+    # The non-stop query exists because the capped page seemed to hide direct
+    # flights. With both result blocks read it should not: the capped page's
+    # "best flights" carried every non-stop on BLR->KUL. Count the pairs where
+    # the extra query still found something cheaper. A full pass with this at
+    # zero means SCRAPE_MAX_STOPS's sibling query can go, halving the pass.
+    if 0 in cheapest and MAX_STOPS in cheapest and MAX_STOPS != 0 and cheapest[0] < cheapest[MAX_STOPS]:
+        STATS["nonstop_cheaper"] += 1
+        print(f"      * {origin.code}->{dest.code} {dep}: non-stop query found INR {cheapest[0]:,}, "
+              f"capped page only {cheapest[MAX_STOPS]:,}", flush=True)
     state.record(dep, bool(priced), nonstop_found, nonstop_asked and MAX_STOPS != 0)
     if not priced:
         return None
@@ -832,7 +849,8 @@ def main() -> int:
     print(f"done in {report['seconds']}s | requests={STATS['requests']} "
           f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
           f"unreadable={STATS['unreadable']} empty={STATS['empty']} timeouts={STATS['timeouts']} "
-          f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']} captcha={STATS['captcha']}" + (" BLOCKED" if report["blocked"] else ""))
+          f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']} captcha={STATS['captcha']} "
+          f"nonstop_cheaper={STATS['nonstop_cheaper']}" + (" BLOCKED" if report["blocked"] else ""))
     return 3 if report["blocked"] else 0
 
 

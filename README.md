@@ -418,3 +418,26 @@ scale this does not need.
    confirm rows land in `flight_fares`.
 8. Add cron at 03:30 IST.
 9. Build the frontend in `trripah_website` against `GET /api/flight-fares`.
+
+## Route schedules (`schedule_probe.py`)
+
+Which routes have non-stop flights, on which weekdays, and by which airlines.
+For every origin x destination it runs a non-stop one-way search for each day
+of one week (schedules repeat weekly) and writes:
+
+- `out/schedules.xlsx` — Routes sheet (direct yes/no, airlines with their days,
+  Mon..Sun, days/week, Daily / 5-6x weekly / Alternate days / 1-2x weekly /
+  No direct, departure times), a Flights sheet with one row per flight, and an
+  About sheet.
+- `out/schedules.json` — the same for the scraper.
+
+About 1,330 requests (~2.5h). Progress is saved per route and a re-run
+resumes. Best run on a laptop, not the droplet; on the droplet it refuses to
+run while a fare pass holds the lock.
+
+```bash
+pip install fast-flights openpyxl
+python3 schedule_probe.py                   # all routes, week 3+ weeks out
+python3 schedule_probe.py --origins pune    # one origin
+python3 schedule_probe.py --xlsx-only       # rebuild the sheet from the JSON
+```

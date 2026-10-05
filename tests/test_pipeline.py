@@ -68,14 +68,24 @@ class Base(unittest.TestCase):
 
 
 class RealResponses(Base):
-    def test_both_parsers_agree_on_real_pages(self):
+    def test_parser_reads_what_the_library_reads(self):
         from fast_flights.parser import parse
         for name in ("blr_kul_nonstop", "blr_kul_2stop"):
             html = fixture(name)
-            lib = [(r.price, [(f.from_airport.code, f.to_airport.code) for f in r.flights]) for r in parse(html)]
-            ours = [(r.price, [(f.from_airport, f.to_airport) for f in r.flights]) for r in scrape._tolerant_parse(html)]
-            self.assertEqual(lib, ours, name)
+            lib = {(r.price, tuple((f.from_airport.code, f.to_airport.code) for f in r.flights)) for r in parse(html)}
+            ours = {(r.price, tuple((f.from_airport, f.to_airport) for f in r.flights)) for r in scrape._parse_page(html)}
             self.assertTrue(lib, name)
+            self.assertLessEqual(lib, ours, name)
+
+    def test_parser_reads_the_best_flights_block(self):
+        # The root cause of 61,372 via Saigon: on the capped page the non-stops
+        # are all in "best flights" (payload[2]), which the library never reads.
+        from fast_flights.parser import parse
+        html = fixture("blr_kul_2stop")
+        self.assertGreater(min(r.price for r in parse(html)), 29828)
+        ours = scrape._parse_page(html)
+        self.assertEqual(min(r.price for r in ours), 29828)
+        self.assertIn([("BLR", "KUL")], [[(f.from_airport, f.to_airport) for f in r.flights] for r in ours])
 
     def test_nonstop_query_wins_on_the_route_that_was_wrong(self):
         # Order of queries is sorted({0, MAX_STOPS}): non-stop first.
@@ -86,14 +96,21 @@ class RealResponses(Base):
         self.assertEqual([(l["from"], l["to"]) for l in fare["outLegs"]], [("BLR", "KUL")])
         self.assertEqual(self.fetches, 2)
 
-    def test_two_stop_query_alone_overprices(self):
-        # The bug, kept as a test: without the non-stop query the cheapest
-        # thing Google shows is a connection, well above the real fare.
-        with mock.patch.object(scrape, "MAX_STOPS", 2):
-            self.pages = [fixture("blr_kul_2stop")]
-            got = scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 2)
-        self.assertGreater(min(r.price for r in got), 29828)
-        self.assertTrue(all(len(r.flights) > 1 for r in got))
+    def test_capped_query_alone_now_finds_the_nonstop(self):
+        self.pages = [fixture("blr_kul_2stop")]
+        got = scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 2)
+        self.assertEqual(min(r.price for r in got), 29828)
+
+    def test_nonstop_query_adds_nothing_here_and_is_counted(self):
+        self.pages = [fixture("blr_kul_nonstop"), fixture("blr_kul_2stop")]
+        scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18")
+        self.assertEqual(scrape.STATS["nonstop_cheaper"], 0)
+
+    def test_times_with_dropped_zeros(self):
+        self.assertEqual(scrape._clock([None, 20]), "00:20")
+        self.assertEqual(scrape._clock([2]), "02:00")
+        self.assertEqual(scrape._clock([23, 25]), "23:25")
+        self.assertIsNone(scrape._clock(None))
 
     def test_fare_record_never_claims_an_unknown_inbound(self):
         # Google's round-trip payload carries the outbound only; the inbound
@@ -117,7 +134,7 @@ class DamagedResponses(Base):
         self.pages = [html]
         got = scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 0)
         self.assertEqual(sorted(r.price for r in got), [30992, 38887, 38887])
-        self.assertEqual(self.fetches, 1)  # recovered from the same page, no refetch
+        self.assertEqual(self.fetches, 1)  # no refetch
         self.assertEqual(scrape.STATS["failed"], 0)
 
     def test_implausible_price_is_dropped(self):
