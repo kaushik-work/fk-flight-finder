@@ -434,14 +434,23 @@ class RouteState:
 
     A route with no flights costs two requests per date pair for nothing, and a
     route with no non-stop service costs one. After DEAD_AFTER consecutive
-    misses the pass stops asking. Backing off a route Google is not answering
-    is also the polite behaviour when the cause is a block rather than an
-    empty route.
+    departure DATES with nothing the pass stops asking. Backing off a route
+    Google is not answering is also the polite behaviour when the cause is a
+    block rather than an empty route.
+
+    Misses are counted per departure date, not per date pair. The pairs are
+    sorted, so the first three are 3, 5 and 7 nights from the same day; a
+    per-pair count wrote a route off after one departure, which kills every
+    international route that does not fly on the 15th of this month.
     """
 
     def __init__(self) -> None:
         self.empty_streak = 0
         self.nonstop_misses = 0
+        self._dep: str | None = None
+        self._dep_priced = False
+        self._dep_nonstop = False
+        self._dep_nonstop_asked = False
 
     @property
     def dead(self) -> bool:
@@ -450,6 +459,28 @@ class RouteState:
     @property
     def nonstop_dead(self) -> bool:
         return self.nonstop_misses >= DEAD_AFTER
+
+    def record(self, dep: str, priced: bool, nonstop: bool, nonstop_asked: bool) -> None:
+        """Note one date pair's outcome; streaks move when the departure day changes."""
+        self.next_departure(dep)
+        self._dep = dep
+        self._dep_priced |= priced
+        self._dep_nonstop |= nonstop
+        self._dep_nonstop_asked |= nonstop_asked
+
+    def _close_day(self) -> None:
+        if self._dep is None:
+            return
+        self.empty_streak = 0 if self._dep_priced else self.empty_streak + 1
+        if self._dep_nonstop_asked:
+            self.nonstop_misses = 0 if self._dep_nonstop else self.nonstop_misses + 1
+        self._dep_priced = self._dep_nonstop = self._dep_nonstop_asked = False
+
+    def next_departure(self, dep: str) -> None:
+        """Called before pricing a pair, so a day's misses count before the dead check."""
+        if self._dep is not None and dep != self._dep:
+            self._close_day()
+            self._dep = None
 
 
 def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> list[Any]:
@@ -565,6 +596,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     priced: list[Any] = []
     first = True
     nonstop_found = False
+    nonstop_asked = False
     for cap in sorted({0, MAX_STOPS}):
         if cap == 0 and state.nonstop_dead and MAX_STOPS != 0:
             STATS["skipped_nonstop"] += 1
@@ -573,12 +605,11 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
             time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
         first = False
         got = _search(origin, dest, dep, ret, cap)
-        if cap == 0 and got:
-            nonstop_found = True
+        if cap == 0:
+            nonstop_asked = True
+            nonstop_found = bool(got)
         priced.extend(got)
-    if MAX_STOPS != 0 and not state.nonstop_dead:
-        state.nonstop_misses = 0 if nonstop_found else state.nonstop_misses + 1
-    state.empty_streak = 0 if priced else state.empty_streak + 1
+    state.record(dep, bool(priced), nonstop_found, nonstop_asked and MAX_STOPS != 0)
     if not priced:
         return None
     best = min(priced, key=lambda r: r.price)
@@ -720,10 +751,11 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
             found: list[tuple[str, str, dict[str, Any]]] = []
             state = RouteState()
             for n, (dep, ret) in enumerate(date_pairs):
+                state.next_departure(dep)
                 if state.dead:
                     left = len(date_pairs) - n
                     STATS["skipped_dead"] += left
-                    print(f"   {dest.code} — no fares in {DEAD_AFTER} date pairs running, skipping {left} more", flush=True)
+                    print(f"   {dest.code} — no fares on {DEAD_AFTER} departure dates running, skipping {left} more", flush=True)
                     break
                 fare = scrape_route(origin, dest, dep, ret, state)
                 if BREAKER["streak"] >= BREAKER_ABORT or (BREAKER["streak"] >= BREAKER_PAUSE and BREAKER["tripped"]):

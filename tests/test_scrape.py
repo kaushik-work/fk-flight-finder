@@ -57,6 +57,34 @@ class RouteStateTest(unittest.TestCase):
         st.empty_streak = scrape.DEAD_AFTER
         self.assertTrue(st.dead)
 
+    def walk(self, st, days, priced=False, nonstop=False):
+        for day in days:
+            for _ in range(3):  # 3, 5 and 7 nights from one departure
+                st.next_departure(day)
+                if st.dead:
+                    return
+                st.record(day, priced, nonstop, True)
+        st.next_departure("9999-12-31")
+
+    def test_one_empty_departure_day_is_not_a_dead_route(self):
+        # The first three sorted pairs share a departure date. A route that does
+        # not fly that one day must survive to the next.
+        st = scrape.RouteState()
+        self.walk(st, ["2026-10-15"])
+        self.assertFalse(st.dead)
+        self.assertFalse(st.nonstop_dead)
+
+    def test_dead_after_n_empty_departure_days(self):
+        st = scrape.RouteState()
+        self.walk(st, [f"2026-1{i}-15" for i in range(scrape.DEAD_AFTER)])
+        self.assertTrue(st.dead)
+
+    def test_a_priced_day_resets_the_streak(self):
+        st = scrape.RouteState()
+        self.walk(st, ["2026-10-15", "2026-10-28"])
+        self.walk(st, ["2026-11-15"], priced=True)
+        self.assertEqual(st.empty_streak, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,4 +32,6 @@ date +%s > "$STARTED"
 cd /opt/fk-flight-finder
 echo "=== $(date -Iseconds) start ===" >> "$LOG"
 ./.venv/bin/python scrape.py >> "$LOG" 2>&1
-echo "=== $(date -Iseconds) exit=$? ===" >> "$LOG"
+# Capture first: inside the echo, $? would be read after $(date) and always be 0.
+rc=$?
+echo "=== $(date -Iseconds) exit=$rc ===" >> "$LOG"
