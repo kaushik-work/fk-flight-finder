@@ -86,5 +86,71 @@ class RouteStateTest(unittest.TestCase):
         self.assertEqual(st.empty_streak, 0)
 
 
+class BreakerTest(unittest.TestCase):
+    def setUp(self):
+        scrape.BREAKER.update(streak=0, tripped=False, healthy=0)
+        self._sleep = scrape.time.sleep
+        scrape.time.sleep = lambda s: None
+
+    def tearDown(self):
+        scrape.time.sleep = self._sleep
+        scrape.BREAKER.update(streak=0, tripped=False, healthy=0)
+
+    def bad(self, n):
+        for _ in range(n):
+            scrape._breaker_bad()
+
+    def test_first_wall_cools_down_second_stops(self):
+        self.bad(scrape.BREAKER_PAUSE)
+        scrape.breaker_check()  # cooldown, not an abort
+        self.assertTrue(scrape.BREAKER["tripped"])
+        self.bad(scrape.BREAKER_PAUSE)
+        with self.assertRaises(scrape.Blocked):
+            scrape.breaker_check()
+
+    def test_a_healed_trip_does_not_abort_a_later_blip(self):
+        # The old breaker never forgot a cooldown: one blip hours later in a
+        # 15h pass aborted it.
+        self.bad(scrape.BREAKER_PAUSE)
+        scrape.breaker_check()
+        for _ in range(scrape.BREAKER_RECOVER):
+            scrape._breaker_ok()
+        self.assertFalse(scrape.BREAKER["tripped"])
+        self.bad(scrape.BREAKER_PAUSE)
+        scrape.breaker_check()  # cools down again rather than raising
+
+    def test_short_runs_do_nothing(self):
+        self.bad(scrape.BREAKER_PAUSE - 1)
+        scrape.breaker_check()
+        self.assertFalse(scrape.BREAKER["tripped"])
+
+
+class SearchTimeoutTest(unittest.TestCase):
+    def setUp(self):
+        scrape.BREAKER.update(streak=0, tripped=False, healthy=0)
+        self._fetch, self._sleep = scrape._fetch_html, scrape.time.sleep
+        scrape.time.sleep = lambda s: None
+        self.calls = 0
+
+        def hung(query, proxy):
+            self.calls += 1
+            raise scrape._HttpTimeout("timed out")
+
+        scrape._fetch_html = hung
+
+    def tearDown(self):
+        scrape._fetch_html, scrape.time.sleep = self._fetch, self._sleep
+        scrape.BREAKER.update(streak=0, tripped=False, healthy=0)
+
+    def test_timeout_is_retried_once_then_skipped_and_counted(self):
+        place = scrape.Place("bangalore", "BLR", "Bengaluru")
+        dest = scrape.Place("kuala-lumpur", "KUL", "Kuala Lumpur")
+        before = scrape.STATS["timeouts"]
+        self.assertEqual(scrape._search(place, dest, "2026-11-15", "2026-11-18", 0), [])
+        self.assertEqual(self.calls, 2)
+        self.assertEqual(scrape.STATS["timeouts"] - before, 2)
+        self.assertEqual(scrape.BREAKER["streak"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

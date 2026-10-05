@@ -28,7 +28,6 @@ import hashlib
 import json
 import os
 import random
-import signal
 import sys
 import time
 import urllib.error
@@ -130,15 +129,23 @@ SKIP_ROUTES = {("PNQ", "BOM"), ("BOM", "PNQ")}
 # A request that has not answered in this long is hung, not slow. The library
 # sets no timeout of its own, and one hung socket used to stall the whole pass
 # until the 20h stuck-warning in run.sh — hours of silence for one request.
+# Enforced inside the HTTP client (primp), not with SIGALRM: a Python signal
+# handler only runs once the native call returns, so it could never interrupt
+# the hung request it was meant for.
 REQUEST_TIMEOUT = int(os.environ.get("SCRAPE_REQUEST_TIMEOUT", "75"))
 
 # Circuit breaker. Consecutive responses we could not read at all are the
 # signature of a block or a payload change, not of empty routes. Past
-# BREAKER_PAUSE the pass sleeps once and tries again; past BREAKER_ABORT it
-# stops and leaves the stored fares alone. Hammering through a CAPTCHA wall is
-# how an IP gets burned for days, and a pass of garbage is worse than no pass.
+# BREAKER_PAUSE the pass cools down and tries again; a second run of
+# BREAKER_PAUSE before it has recovered stops the pass and leaves the stored
+# fares alone. Hammering through a CAPTCHA wall is how an IP gets burned for
+# days, and a pass of garbage is worse than no pass.
+#
+# BREAKER_RECOVER readable responses after a cooldown clear it. Without that, a
+# blip hours later in a 15h pass was judged against one cooldown long healed,
+# and aborted the whole pass.
 BREAKER_PAUSE = int(os.environ.get("SCRAPE_BREAKER_PAUSE", "8"))
-BREAKER_ABORT = int(os.environ.get("SCRAPE_BREAKER_ABORT", "16"))
+BREAKER_RECOVER = int(os.environ.get("SCRAPE_BREAKER_RECOVER", "50"))
 BREAKER_COOLDOWN = int(os.environ.get("SCRAPE_BREAKER_COOLDOWN", "1200"))
 
 # A round trip outside this range is a parse error, not a fare. The floor is
@@ -151,15 +158,64 @@ MAX_PRICE = 400_000
 # baselines in the README can be compared against a number, not a feeling.
 STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
          "timeouts": 0, "rejected_prices": 0}
-BREAKER = {"streak": 0, "tripped": 0}
+BREAKER = {"streak": 0, "tripped": False, "healthy": 0}
 
 
-class _Timeout(Exception):
-    pass
+def _breaker_ok() -> None:
+    """A readable response: the streak ends, and enough of them heal a trip."""
+    BREAKER["streak"] = 0
+    BREAKER["healthy"] += 1
+    if BREAKER["healthy"] >= BREAKER_RECOVER:
+        BREAKER["tripped"] = False
 
 
-def _on_alarm(signum: int, frame: Any) -> None:  # noqa: ARG001
-    raise _Timeout()
+def _breaker_bad() -> None:
+    BREAKER["streak"] += 1
+    BREAKER["healthy"] = 0
+
+
+def breaker_check() -> None:
+    """Between date pairs: cool down on the first wall, stop on the second."""
+    if BREAKER["streak"] < BREAKER_PAUSE:
+        return
+    if BREAKER["tripped"]:
+        print(f"   ! {BREAKER['streak']} unreadable responses in a row after a cooldown: "
+              "Google is blocking us or the payload changed. Stopping, stored fares untouched.", flush=True)
+        raise Blocked()
+    BREAKER["tripped"] = True
+    print(f"   ! {BREAKER['streak']} unreadable responses in a row: cooling down "
+          f"{BREAKER_COOLDOWN // 60} min before trying again", flush=True)
+    time.sleep(BREAKER_COOLDOWN)
+    BREAKER["streak"] = 0
+
+
+# primp's own timeout error; older builds lack the class, and then a timeout
+# surfaces as an ordinary exception and is handled as unreadable.
+try:
+    from primp import TimeoutError as _HttpTimeout
+except ImportError:  # pragma: no cover
+    class _HttpTimeout(Exception):  # type: ignore[no-redef]
+        pass
+
+
+def _fetch_html(query: Any, proxy: str | None) -> str:
+    """The library's own fetch, plus the timeout it does not set.
+
+    Impersonation mirrors fast_flights.fetcher.fetch_flights_html (3.1.0);
+    keep the two in step if the library is upgraded.
+    """
+    from fast_flights.fetcher import URL
+    from primp import Client
+
+    client = Client(
+        impersonate="chrome_145",
+        impersonate_os="macos",
+        referer=True,
+        proxy=proxy,
+        cookie_store=True,
+        timeout=REQUEST_TIMEOUT,
+    )
+    return client.get(URL, params=query.params()).text
 
 
 class Blocked(Exception):
@@ -354,13 +410,14 @@ class _Itinerary:
         self.airlines = airlines
 
 
-def _tolerant_parse(query: Any) -> list[_Itinerary]:
-    """Re-parse a response the library rejected, skipping unpriced itineraries."""
-    from fast_flights.fetcher import fetch_flights_html
+def _tolerant_parse(html: str) -> list[_Itinerary]:
+    """Re-parse a response the library rejected, skipping unpriced itineraries.
+
+    Takes the HTML already fetched; it used to fetch the page again, a third
+    request per failing pair that also skipped the delay between requests.
+    """
     from selectolax.lexbor import LexborHTMLParser
 
-    html = fetch_flights_html(query)
-    html = getattr(html, "text", html)
     node = LexborHTMLParser(html).css_first(r"script.ds\:1")
     if node is None:
         # Not "no flights": the page has no data block at all. Raise so the
@@ -499,76 +556,70 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
         max_stops=max_stops,
     )
 
-    # One retry. Failures here are mostly transient — Google occasionally serves
-    # a layout the parser does not recognise, surfacing as IndexError, and the
-    # same query succeeds moments later. A route that fails twice is skipped
-    # rather than retried harder; hammering a failing route is how an IP starts
-    # collecting CAPTCHAs.
+    # One retry. Failures here are mostly transient — a timeout, a dropped
+    # connection, a page Google served in a shape nobody can read — and the
+    # same query usually succeeds moments later. A pair that fails twice is
+    # skipped rather than retried harder; hammering a failing route is how an
+    # IP starts collecting CAPTCHAs.
+    #
+    # A page the library cannot parse is first handed to the tolerant parse,
+    # from the same HTML: usually one unpriced itinerary taking the page down.
+    from fast_flights.parser import parse
+
     results: list[Any] = []
     for attempt in (0, 1):
-        proxy = _proxy_for(attempt)
+        last = attempt == 1
         try:
-            kwargs: dict[str, Any] = {}
-            if proxy:
-                kwargs["proxy"] = proxy
-            signal.signal(signal.SIGALRM, _on_alarm)
-            signal.alarm(REQUEST_TIMEOUT)
-            try:
-                results = list(ff.get_flights(query, **kwargs) if kwargs else ff.get_flights(query))
-            finally:
-                signal.alarm(0)
-            BREAKER["streak"] = 0
+            html = _fetch_html(query, _proxy_for(attempt))
+        except _HttpTimeout:
+            STATS["timeouts"] += 1
+            _breaker_bad()
+            if last:
+                print(f"      ! {origin.code}->{dest.code} {dep}: no answer in {REQUEST_TIMEOUT}s", flush=True)
+                return []
+            time.sleep(DELAY)
+            continue
+        except Exception as exc:  # noqa: BLE001 — one dead route must not end the run
+            _breaker_bad()
+            if last:
+                STATS["unreadable"] += 1
+                print(f"      ! {origin.code}->{dest.code} {dep}: fetch failed ({type(exc).__name__})", flush=True)
+                return []
+            time.sleep(DELAY)
+            continue
+
+        try:
+            results = list(parse(html))
+            _breaker_ok()
             break
         except ff.FlightsNotFound:
-            BREAKER["streak"] = 0
+            _breaker_ok()
             return []  # genuinely no flights; not an error worth logging
-        except _Timeout:
-            STATS["timeouts"] += 1
-            if attempt == 1:
-                print(f"      ! {origin.code}->{dest.code} {dep}: no answer in {REQUEST_TIMEOUT}s", flush=True)
-                BREAKER["streak"] += 1
-                return []
-            time.sleep(DELAY)
-        except TypeError:
-            # This fast-flights build does not accept a proxy argument. Say so
-            # once, loudly, rather than silently scraping direct while the
-            # operator believes traffic is proxied.
-            if proxy:
-                print("      ! PROXY_URLS is set but this fast-flights build ignores it", flush=True)
+        except Exception as exc:  # noqa: BLE001
             try:
-                results = list(ff.get_flights(query))
-                break
-            except Exception:
-                return []
-        except Exception as exc:  # noqa: BLE001 — one dead route must not end the run
-            if attempt == 1:
-                # Before giving up, try the tolerant parse: an IndexError here
-                # is usually one unpriced itinerary taking the whole page down.
-                tolerant = "empty"
-                try:
-                    recovered = _tolerant_parse(query)
-                except Exception as terr:  # noqa: BLE001
-                    recovered = []
-                    tolerant = f"unreadable ({type(terr).__name__})"
-                if recovered:
-                    print(f"      ~ {origin.code}->{dest.code} {dep}: recovered "
-                          f"{len(recovered)} priced via tolerant parse", flush=True)
-                    results = recovered
-                    BREAKER["streak"] = 0
-                    break
-                # "empty" means the payload parsed and held no priced flight — an
-                # ordinary route with no service. "unreadable" means we could not
-                # parse it at all, which is the one that signals a block or a
-                # payload change. They used to log identically.
-                if tolerant.startswith("unreadable"):
+                recovered = _tolerant_parse(html)
+            except Exception as terr:  # noqa: BLE001
+                # "unreadable": no parse of this page works at all, the one
+                # that signals a block or a payload change. Worth one retry.
+                _breaker_bad()
+                if last:
                     STATS["unreadable"] += 1
-                    BREAKER["streak"] += 1
-                else:
-                    STATS["empty"] += 1
-                    BREAKER["streak"] = 0
-                print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, tolerant parse {tolerant}", flush=True)
-                return []
-            time.sleep(DELAY)
+                    print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, "
+                          f"tolerant parse unreadable ({type(terr).__name__})", flush=True)
+                    return []
+                time.sleep(DELAY)
+                continue
+            _breaker_ok()
+            if recovered:
+                print(f"      ~ {origin.code}->{dest.code} {dep}: recovered "
+                      f"{len(recovered)} priced via tolerant parse", flush=True)
+                results = recovered
+                break
+            # "empty": the payload parsed and held no priced flight — an
+            # ordinary route with no service. Asking again will not change it.
+            STATS["empty"] += 1
+            print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, tolerant parse empty", flush=True)
+            return []
 
     priced = [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
     sane = [r for r in priced if MIN_PRICE <= r.price <= MAX_PRICE]
@@ -758,16 +809,7 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
                     print(f"   {dest.code} — no fares on {DEAD_AFTER} departure dates running, skipping {left} more", flush=True)
                     break
                 fare = scrape_route(origin, dest, dep, ret, state)
-                if BREAKER["streak"] >= BREAKER_ABORT or (BREAKER["streak"] >= BREAKER_PAUSE and BREAKER["tripped"]):
-                    print(f"   ! {BREAKER['streak']} unreadable responses in a row after a cooldown: "
-                          "Google is blocking us or the payload changed. Stopping, stored fares untouched.", flush=True)
-                    raise Blocked()
-                if BREAKER["streak"] >= BREAKER_PAUSE:
-                    BREAKER["tripped"] += 1
-                    print(f"   ! {BREAKER['streak']} unreadable responses in a row: cooling down "
-                          f"{BREAKER_COOLDOWN // 60} min before trying again", flush=True)
-                    time.sleep(BREAKER_COOLDOWN)
-                    BREAKER["streak"] = 0
+                breaker_check()
                 time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
                 if fare:
                     found.append((dep, ret, fare))
