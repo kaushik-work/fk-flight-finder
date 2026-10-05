@@ -157,7 +157,18 @@ MAX_PRICE = 400_000
 # Requests actually sent to Google this pass, printed at the end so the health
 # baselines in the README can be compared against a number, not a feeling.
 STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
-         "timeouts": 0, "rejected_prices": 0}
+         "timeouts": 0, "rejected_prices": 0, "failed": 0}
+
+# Share of an origin's queries that may fail outright (timeout or unreadable,
+# after the retry) before its fares are withheld. The backend replaces an
+# origin's fares wholesale, so posting a pass that was half blocked would drop
+# every destination the block hid. Stale prices beat missing ones. The breaker
+# only catches failures in a row; this catches a block that comes and goes.
+ORIGIN_MAX_FAIL = float(os.environ.get("SCRAPE_ORIGIN_MAX_FAIL", "0.15"))
+
+# POST attempts and the wait before each retry. Only network errors and 5xx are
+# retried; a 4xx is the backend refusing the payload and will refuse it again.
+POST_RETRY_WAITS = (30, 120)
 BREAKER = {"streak": 0, "tripped": False, "healthy": 0}
 
 
@@ -575,6 +586,7 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             STATS["timeouts"] += 1
             _breaker_bad()
             if last:
+                STATS["failed"] += 1
                 print(f"      ! {origin.code}->{dest.code} {dep}: no answer in {REQUEST_TIMEOUT}s", flush=True)
                 return []
             time.sleep(DELAY)
@@ -583,6 +595,7 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             _breaker_bad()
             if last:
                 STATS["unreadable"] += 1
+                STATS["failed"] += 1
                 print(f"      ! {origin.code}->{dest.code} {dep}: fetch failed ({type(exc).__name__})", flush=True)
                 return []
             time.sleep(DELAY)
@@ -604,6 +617,7 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
                 _breaker_bad()
                 if last:
                     STATS["unreadable"] += 1
+                    STATS["failed"] += 1
                     print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, "
                           f"tolerant parse unreadable ({type(terr).__name__})", flush=True)
                     return []
@@ -738,13 +752,19 @@ def post_fares(origin_slug: str, fares: list[dict[str, Any]], dry_run: bool) -> 
         headers={"Content-Type": "application/json", "x-fare-secret": SECRET},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return 200 <= response.status < 300
-    except urllib.error.HTTPError as exc:
-        print(f"   ! POST failed: HTTP {exc.code} {exc.read()[:160].decode(errors='replace')}", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"   ! POST failed: {type(exc).__name__}", flush=True)
+    for attempt, wait in enumerate((0, *POST_RETRY_WAITS)):
+        if wait:
+            print(f"   retrying POST in {wait}s", flush=True)
+            time.sleep(wait)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return 200 <= response.status < 300
+        except urllib.error.HTTPError as exc:
+            print(f"   ! POST failed: HTTP {exc.code} {exc.read()[:160].decode(errors='replace')}", flush=True)
+            if exc.code < 500:
+                return False  # refused, not broken: sending it again changes nothing
+        except Exception as exc:  # noqa: BLE001
+            print(f"   ! POST failed: {type(exc).__name__}", flush=True)
     return False
 
 
@@ -785,7 +805,7 @@ def main() -> int:
     print(f"done in {report['seconds']}s | requests={STATS['requests']} "
           f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
           f"unreadable={STATS['unreadable']} empty={STATS['empty']} timeouts={STATS['timeouts']} "
-          f"rejected_prices={STATS['rejected_prices']}" + (" BLOCKED" if report["blocked"] else ""))
+          f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']}" + (" BLOCKED" if report["blocked"] else ""))
     return 3 if report["blocked"] else 0
 
 
@@ -794,6 +814,7 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
     for origin in origins:
         print(f"[{origin.slug}] {origin.code}", flush=True)
         fares: list[dict[str, Any]] = []
+        sent_before, failed_before = STATS["requests"], STATS["failed"]
         targets = [d for d in dests if d.code != origin.code and (origin.code, d.code) not in SKIP_ROUTES]
         if args.limit:
             targets = targets[: args.limit]
@@ -824,7 +845,14 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
             else:
                 print(f"   {dest.code} — nothing", flush=True)
 
-        if fares:
+        sent = STATS["requests"] - sent_before
+        failed = STATS["failed"] - failed_before
+        if sent and failed / sent > ORIGIN_MAX_FAIL:
+            report["origins"][origin.slug] = {"fares": len(fares), "stored": False, "withheld": True,
+                                              "failed": failed, "requests": sent}
+            print(f"   -> {failed} of {sent} queries failed ({failed / sent:.0%}, limit {ORIGIN_MAX_FAIL:.0%}): "
+                  "withholding this origin, stored fares untouched\n", flush=True)
+        elif fares:
             ok = post_fares(origin.slug, fares, args.dry_run)
             report["origins"][origin.slug] = {"fares": len(fares), "stored": ok}
             print(f"   -> {len(fares)} fares, stored={ok}\n", flush=True)
