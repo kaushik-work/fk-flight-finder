@@ -115,6 +115,22 @@ MAX_STOPS = int(os.environ.get("SCRAPE_MAX_STOPS", "2"))
 PROXY_URLS = [p.strip() for p in os.environ.get("PROXY_URLS", "").split(",") if p.strip()]
 
 
+# Date pairs in a row with nothing priced before a route is written off for the
+# rest of the pass, and before the non-stop query is dropped for it. Three is
+# enough to span more than one month of departures, so a route that only
+# flies some days is not mistaken for one that never does.
+DEAD_AFTER = int(os.environ.get("SCRAPE_DEAD_AFTER", "3"))
+
+# Routes with no real service. PNQ<->BOM is a 150km hop; all 17 requests per
+# pass came back empty. Kept here rather than in routes.json because that file
+# is generated.
+SKIP_ROUTES = {("PNQ", "BOM"), ("BOM", "PNQ")}
+
+# Requests actually sent to Google this pass, printed at the end so the health
+# baselines in the README can be compared against a number, not a feeling.
+STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0}
+
+
 @dataclass(frozen=True)
 class Place:
     slug: str
@@ -312,7 +328,9 @@ def _tolerant_parse(query: Any) -> list[_Itinerary]:
     html = getattr(html, "text", html)
     node = LexborHTMLParser(html).css_first(r"script.ds\:1")
     if node is None:
-        return []
+        # Not "no flights": the page has no data block at all. Raise so the
+        # caller can tell this apart from a route that is genuinely empty.
+        raise ValueError("no data block in response")
     raw = node.text().split("data:", 1)[1].rsplit(",", 1)[0]
     if raw.endswith("errorHasStatus: true"):
         return []
@@ -376,8 +394,32 @@ def _describe(segments: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+class RouteState:
+    """What one route has taught us so far this pass.
+
+    A route with no flights costs two requests per date pair for nothing, and a
+    route with no non-stop service costs one. After DEAD_AFTER consecutive
+    misses the pass stops asking. Backing off a route Google is not answering
+    is also the polite behaviour when the cause is a block rather than an
+    empty route.
+    """
+
+    def __init__(self) -> None:
+        self.empty_streak = 0
+        self.nonstop_misses = 0
+
+    @property
+    def dead(self) -> bool:
+        return self.empty_streak >= DEAD_AFTER
+
+    @property
+    def nonstop_dead(self) -> bool:
+        return self.nonstop_misses >= DEAD_AFTER
+
+
 def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> list[Any]:
     """Priced itineraries Google returns for one date pair at one stop cap."""
+    STATS["requests"] += 1
     query = ff.create_query(
         flights=[
             ff.FlightQuery(date=dep, from_airport=origin.code, to_airport=dest.code),
@@ -422,23 +464,30 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             if attempt == 1:
                 # Before giving up, try the tolerant parse: an IndexError here
                 # is usually one unpriced itinerary taking the whole page down.
+                tolerant = "empty"
                 try:
                     recovered = _tolerant_parse(query)
-                except Exception:  # noqa: BLE001
+                except Exception as terr:  # noqa: BLE001
                     recovered = []
+                    tolerant = f"unreadable ({type(terr).__name__})"
                 if recovered:
                     print(f"      ~ {origin.code}->{dest.code} {dep}: recovered "
                           f"{len(recovered)} priced via tolerant parse", flush=True)
                     results = recovered
                     break
-                print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}", flush=True)
+                # "empty" means the payload parsed and held no priced flight — an
+                # ordinary route with no service. "unreadable" means we could not
+                # parse it at all, which is the one that signals a block or a
+                # payload change. They used to log identically.
+                STATS["unreadable" if tolerant.startswith("unreadable") else "empty"] += 1
+                print(f"      ! {origin.code}->{dest.code} {dep}: {type(exc).__name__}, tolerant parse {tolerant}", flush=True)
                 return []
             time.sleep(DELAY)
 
     return [r for r in results if isinstance(getattr(r, "price", None), (int, float)) and r.price > 0]
 
 
-def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, Any] | None:
+def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteState | None = None) -> dict[str, Any] | None:
     """Cheapest round-trip for one date pair, or None when there is nothing.
 
     Two queries, cheapest across both. Google answers each with only a handful
@@ -451,11 +500,24 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str) -> dict[str, An
     surfaces the direct flights; the capped query keeps the cheap connections
     that beat a non-stop on long-haul routes.
     """
+    state = state or RouteState()
     priced: list[Any] = []
-    for i, cap in enumerate(sorted({0, MAX_STOPS})):
-        if i:
+    first = True
+    nonstop_found = False
+    for cap in sorted({0, MAX_STOPS}):
+        if cap == 0 and state.nonstop_dead and MAX_STOPS != 0:
+            STATS["skipped_nonstop"] += 1
+            continue
+        if not first:
             time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
-        priced.extend(_search(origin, dest, dep, ret, cap))
+        first = False
+        got = _search(origin, dest, dep, ret, cap)
+        if cap == 0 and got:
+            nonstop_found = True
+        priced.extend(got)
+    if MAX_STOPS != 0 and not state.nonstop_dead:
+        state.nonstop_misses = 0 if nonstop_found else state.nonstop_misses + 1
+    state.empty_streak = 0 if priced else state.empty_streak + 1
     if not priced:
         return None
     best = min(priced, key=lambda r: r.price)
@@ -568,14 +630,20 @@ def main() -> int:
     for origin in origins:
         print(f"[{origin.slug}] {origin.code}", flush=True)
         fares: list[dict[str, Any]] = []
-        targets = [d for d in dests if d.code != origin.code]
+        targets = [d for d in dests if d.code != origin.code and (origin.code, d.code) not in SKIP_ROUTES]
         if args.limit:
             targets = targets[: args.limit]
 
         for dest in targets:
             found: list[tuple[str, str, dict[str, Any]]] = []
-            for dep, ret in date_pairs:
-                fare = scrape_route(origin, dest, dep, ret)
+            state = RouteState()
+            for n, (dep, ret) in enumerate(date_pairs):
+                if state.dead:
+                    left = len(date_pairs) - n
+                    STATS["skipped_dead"] += left
+                    print(f"   {dest.code} — no fares in {DEAD_AFTER} date pairs running, skipping {left} more", flush=True)
+                    break
+                fare = scrape_route(origin, dest, dep, ret, state)
                 time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
                 if fare:
                     found.append((dep, ret, fare))
@@ -598,7 +666,9 @@ def main() -> int:
             # prices, never like no flights.
             print("   -> nothing usable; leaving stored fares alone\n", flush=True)
 
-    print(f"done in {int(time.time() - started)}s")
+    print(f"done in {int(time.time() - started)}s | requests={STATS['requests']} "
+          f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
+          f"unreadable={STATS['unreadable']} empty={STATS['empty']}")
     return 0
 
 
