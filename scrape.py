@@ -158,7 +158,7 @@ MAX_PRICE = 400_000
 # baselines in the README can be compared against a number, not a feeling.
 STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
          "timeouts": 0, "rejected_prices": 0, "failed": 0, "captcha": 0,
-         "nonstop_cheaper": 0}
+         "nonstop_cheaper": 0, "unanswered": 0}
 
 # Share of an origin's queries that may fail outright (timeout or unreadable,
 # after the retry) before its fares are withheld. The backend replaces an
@@ -238,6 +238,18 @@ def _fetch_html(query: Any, proxy: str | None) -> str:
         timeout=REQUEST_TIMEOUT,
     )
     return client.get(URL, params=query.params()).text
+
+
+class Unanswered(ValueError):
+    """A results page sent before Google had results: not "no flights"."""
+
+
+# A complete answer, results or none, has a payload of 31-32 slots. Seen live
+# on the droplet, 5 Oct 2026: HYD->MUC 15-20 Jan 2027, up to 2 stops, came
+# back with 24 slots and no results — a route with plenty of one-stops.
+# Three of those in a row marked the route dead and it lost January and
+# February. A short payload with no results is "not answered", never "empty".
+COMPLETE_PAYLOAD_MIN = 28
 
 
 class Blocked(Exception):
@@ -478,6 +490,8 @@ def _parse_page(html: str) -> list[_Itinerary]:
         if block and block[0]:
             items.extend(block[0])
     if not items:
+        if len(payload) < COMPLETE_PAYLOAD_MIN:
+            raise Unanswered(f"no results in a {len(payload)}-slot payload")
         return []
 
     out: list[_Itinerary] = []
@@ -556,6 +570,7 @@ class RouteState:
         self._dep_priced = False
         self._dep_nonstop = False
         self._dep_nonstop_asked = False
+        self._dep_answered = False
 
     @property
     def dead(self) -> bool:
@@ -565,10 +580,15 @@ class RouteState:
     def nonstop_dead(self) -> bool:
         return self.nonstop_misses >= DEAD_AFTER
 
-    def record(self, dep: str, priced: bool, nonstop: bool, nonstop_asked: bool) -> None:
-        """Note one date pair's outcome; streaks move when the departure day changes."""
+    def record(self, dep: str, priced: bool, nonstop: bool, nonstop_asked: bool, answered: bool = True) -> None:
+        """Note one date pair's outcome; streaks move when the departure day changes.
+
+        A pair Google did not answer says nothing about the route: a day made
+        only of those neither breaks nor extends the empty streak.
+        """
         self.next_departure(dep)
         self._dep = dep
+        self._dep_answered |= answered or priced
         self._dep_priced |= priced
         self._dep_nonstop |= nonstop
         self._dep_nonstop_asked |= nonstop_asked
@@ -576,10 +596,13 @@ class RouteState:
     def _close_day(self) -> None:
         if self._dep is None:
             return
-        self.empty_streak = 0 if self._dep_priced else self.empty_streak + 1
+        if self._dep_priced:
+            self.empty_streak = 0
+        elif self._dep_answered:
+            self.empty_streak += 1
         if self._dep_nonstop_asked:
             self.nonstop_misses = 0 if self._dep_nonstop else self.nonstop_misses + 1
-        self._dep_priced = self._dep_nonstop = self._dep_nonstop_asked = False
+        self._dep_priced = self._dep_nonstop = self._dep_nonstop_asked = self._dep_answered = False
 
     def next_departure(self, dep: str) -> None:
         """Called before pricing a pair, so a day's misses count before the dead check."""
@@ -588,8 +611,12 @@ class RouteState:
             self._dep = None
 
 
-def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> list[Any]:
-    """Priced itineraries Google returns for one date pair at one stop cap."""
+def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> list[Any] | None:
+    """Priced itineraries Google returns for one date pair at one stop cap.
+
+    [] means Google answered: no flights. None means it did not answer (see
+    Unanswered); the caller must not read that as an empty route.
+    """
     STATS["requests"] += 1
     query = ff.create_query(
         flights=[
@@ -646,6 +673,15 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
 
         try:
             results = _parse_page(html)
+        except Unanswered as exc:
+            _breaker_ok()  # a readable page, just an early one; not a block
+            if last:
+                STATS["unanswered"] += 1
+                print(f"      ? {origin.code}->{dest.code} {dep}: unanswered ({exc}); skipping this pair, "
+                      "not counting it as no flights", flush=True)
+                return None
+            time.sleep(DELAY)
+            continue
         except Exception as exc:  # noqa: BLE001
             # "unreadable": a page with no usable data block, the one that
             # signals a block or a payload change. Worth one retry.
@@ -694,6 +730,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     first = True
     nonstop_found = False
     nonstop_asked = False
+    answered = False
     cheapest: dict[int, int] = {}
     for cap in sorted({0, MAX_STOPS}):
         if cap == 0 and state.nonstop_dead and MAX_STOPS != 0:
@@ -703,6 +740,9 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
             time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
         first = False
         got = _search(origin, dest, dep, ret, cap)
+        if got is None:
+            continue  # not answered: no evidence either way
+        answered = True
         if cap == 0:
             nonstop_asked = True
             nonstop_found = bool(got)
@@ -718,7 +758,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
         STATS["nonstop_cheaper"] += 1
         print(f"      * {origin.code}->{dest.code} {dep}: non-stop query found INR {cheapest[0]:,}, "
               f"capped page only {cheapest[MAX_STOPS]:,}", flush=True)
-    state.record(dep, bool(priced), nonstop_found, nonstop_asked and MAX_STOPS != 0)
+    state.record(dep, bool(priced), nonstop_found, nonstop_asked and MAX_STOPS != 0, answered)
     if not priced:
         return None
     best = min(priced, key=lambda r: r.price)
@@ -850,7 +890,7 @@ def main() -> int:
           f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
           f"unreadable={STATS['unreadable']} empty={STATS['empty']} timeouts={STATS['timeouts']} "
           f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']} captcha={STATS['captcha']} "
-          f"nonstop_cheaper={STATS['nonstop_cheaper']}" + (" BLOCKED" if report["blocked"] else ""))
+          f"nonstop_cheaper={STATS['nonstop_cheaper']} unanswered={STATS['unanswered']}" + (" BLOCKED" if report["blocked"] else ""))
     return 3 if report["blocked"] else 0
 
 

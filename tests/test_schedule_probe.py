@@ -30,6 +30,11 @@ class NonstopFlights(unittest.TestCase):
     def test_no_service_is_an_answer(self):
         self.assertEqual(sp.nonstop_flights(fixture("pnq_hkt_nonstop_empty"), "PNQ", "HKT"), [])
 
+    def test_short_page_is_unknown_not_no_flights(self):
+        from test_pipeline import short_page
+        with self.assertRaises(ValueError):
+            sp.nonstop_flights(short_page(), "HYD", "MUC")
+
     def test_captcha_is_not_an_answer(self):
         with self.assertRaises(ValueError):
             sp.nonstop_flights(fixture("captcha"), "BLR", "KUL")

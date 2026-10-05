@@ -90,6 +90,10 @@ def nonstop_flights(html: str, origin: str, dest: str) -> list[dict[str, Any]]:
         if block and block[0]:
             entries.extend(block[0])
 
+    if not entries and len(payload) < scrape.COMPLETE_PAYLOAD_MIN:
+        # Sent before Google had results: "unknown", not "no flights".
+        raise scrape.Unanswered(f"no results in a {len(payload)}-slot payload")
+
     seen: set[tuple[str, str | None]] = set()
     out: list[dict[str, Any]] = []
     for entry in entries:

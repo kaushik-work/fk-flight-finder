@@ -178,6 +178,44 @@ class DamagedResponses(Base):
         self.assertEqual(scrape.BREAKER["streak"], 0)
 
 
+def short_page() -> str:
+    """The HYD->MUC 15 Jan 2027 shape seen live: a 24-slot payload, no results."""
+    return edit_payload(fixture("pnq_hkt_nonstop_empty"), lambda p: p.__delitem__(slice(24, None)))
+
+
+class Unanswered(Base):
+    def test_short_page_is_unanswered_not_empty(self):
+        self.pages = [short_page(), short_page()]
+        self.assertIsNone(scrape._search(BLR, KUL, "2027-01-15", "2027-01-20", 2))
+        self.assertEqual(self.fetches, 2)  # retried once
+        self.assertEqual(scrape.STATS["unanswered"], 1)
+        self.assertEqual(scrape.STATS["empty"], 0)
+        self.assertEqual(scrape.STATS["failed"], 0)  # not a block: no origin guard, no breaker
+        self.assertEqual(scrape.BREAKER["streak"], 0)
+
+    def test_short_then_full_page_is_used(self):
+        self.pages = [short_page(), fixture("blr_kul_2stop")]
+        got = scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 2)
+        self.assertEqual(min(r.price for r in got), 29828)
+
+    def test_unanswered_days_never_kill_a_route(self):
+        # The live failure: three unanswered dates in a row wrote HYD->MUC off.
+        state = scrape.RouteState()
+        days = ["2026-12-28", "2027-01-15", "2027-01-28", "2027-02-15"]
+        for day in days:
+            state.next_departure(day)
+            self.assertFalse(state.dead, day)
+            self.pages = [short_page()] * 4  # both queries, each retried
+            self.assertIsNone(scrape.scrape_route(BLR, KUL, day, day, state))
+        state.next_departure("2027-03-01")
+        self.assertFalse(state.dead)
+        self.assertEqual(state.empty_streak, 0)
+
+    def test_genuinely_empty_page_still_counts_as_empty(self):
+        # The full-length empty answer must not be mistaken for unanswered.
+        self.assertEqual(scrape._parse_page(fixture("pnq_hkt_nonstop_empty")), [])
+
+
 class OriginGuard(Base):
     def run_origin(self, pages, n_dests=4):
         self.pages = list(pages)
