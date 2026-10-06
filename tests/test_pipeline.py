@@ -203,9 +203,11 @@ class Unanswered(Base):
         got = scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 2)
         self.assertEqual(min(r.price for r in got), 29828)
 
-    def test_unanswered_days_never_kill_a_route(self):
-        # The live failure: three unanswered dates in a row wrote HYD->MUC off.
+    def test_unanswered_days_never_kill_a_route_that_has_priced(self):
+        # The live failure: three unanswered dates in a row wrote HYD->MUC off,
+        # a route that had priced Oct-Dec.
         state = scrape.RouteState()
+        state.record("2026-10-15", True, False, False)
         days = ["2026-12-28", "2027-01-15", "2027-01-28", "2027-02-15"]
         for day in days:
             state.next_departure(day)
@@ -215,6 +217,17 @@ class Unanswered(Base):
         state.next_departure("2027-03-01")
         self.assertFalse(state.dead)
         self.assertEqual(state.empty_streak, 0)
+
+    def test_a_route_that_only_ever_answers_short_dies(self):
+        # PNQ->RUN, 5-6 Oct: a short page on every date of every month.
+        state = scrape.RouteState()
+        for day in ["2026-10-15", "2026-10-28", "2026-11-15"]:
+            state.next_departure(day)
+            self.assertFalse(state.dead, day)
+            self.pages = [short_page()] * 4
+            scrape.scrape_route(BLR, KUL, day, day, state)
+        state.next_departure("2026-11-28")
+        self.assertTrue(state.dead)
 
     def test_genuinely_empty_page_still_counts_as_empty(self):
         # The full-length empty answer must not be mistaken for unanswered.

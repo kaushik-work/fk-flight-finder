@@ -569,10 +569,18 @@ class RouteState:
     sorted, so the first three are 3, 5 and 7 nights from the same day; a
     per-pair count wrote a route off after one departure, which kills every
     international route that does not fly on the 15th of this month.
+
+    Days Google did not answer (Unanswered) count only for a route that has
+    not priced this pass. The 5-6 Oct run had PNQ->RUN/MXP/KIX/FCO and HYD->RUN
+    answer with a short page on every date of every month — Google's way of
+    saying there is nothing on the route — and, never counted, they cost ~40
+    requests each per pass. A route that has priced keeps the protection: a
+    run of short pages there is Google, not the route (HYD->MUC, Jan 2027).
     """
 
     def __init__(self) -> None:
         self.empty_streak = 0
+        self.silent_streak = 0
         self.nonstop_misses = 0
         self._dep: str | None = None
         self._dep_priced = False
@@ -583,7 +591,9 @@ class RouteState:
 
     @property
     def dead(self) -> bool:
-        return self.empty_streak >= DEAD_AFTER
+        if self.empty_streak >= DEAD_AFTER:
+            return True
+        return not self.ever_priced and self.empty_streak + self.silent_streak >= DEAD_AFTER
 
     @property
     def nonstop_dead(self) -> bool:
@@ -607,9 +617,11 @@ class RouteState:
         if self._dep is None:
             return
         if self._dep_priced:
-            self.empty_streak = 0
+            self.empty_streak = self.silent_streak = 0
         elif self._dep_answered:
             self.empty_streak += 1
+        else:
+            self.silent_streak += 1
         if self._dep_nonstop_asked:
             self.nonstop_misses = 0 if self._dep_nonstop else self.nonstop_misses + 1
         self._dep_priced = self._dep_nonstop = self._dep_nonstop_asked = self._dep_answered = False
