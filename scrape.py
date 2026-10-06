@@ -110,6 +110,14 @@ DELAY = float(os.environ.get("SCRAPE_DELAY", "5"))
 
 MAX_STOPS = int(os.environ.get("SCRAPE_MAX_STOPS", "2"))
 
+# A second, non-stop-only query per date pair. It was added when the capped
+# page seemed to hide direct flights; the real cause was the unread "best
+# flights" block (see _parse_page). The 5-6 Oct 2026 run over five origins,
+# both blocks read, logged nonstop_cheaper=0: the extra query never once beat
+# the capped page. Off by default, which halves a pass. SCRAPE_NONSTOP_QUERY=1
+# brings it back.
+NONSTOP_QUERY = os.environ.get("SCRAPE_NONSTOP_QUERY", "0") == "1"
+
 # Optional rotating proxies, comma-separated. Empty means direct from the
 # droplet IP, which is the verified-working default.
 PROXY_URLS = [p.strip() for p in os.environ.get("PROXY_URLS", "").split(",") if p.strip()]
@@ -679,7 +687,8 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
             _breaker_ok()  # a readable page, just an early one; not a block
             if last:
                 STATS["unanswered"] += 1
-                print(f"      ? {origin.code}->{dest.code} {dep}: unanswered ({exc}); skipping this pair, "
+                stops = "non-stop" if max_stops == 0 else f"up to {max_stops} stops"
+                print(f"      ? {origin.code}->{dest.code} {dep}: unanswered ({stops}; {exc}); skipping, "
                       "not counting it as no flights", flush=True)
                 return None
             time.sleep(DELAY)
@@ -717,15 +726,13 @@ def _search(origin: Place, dest: Place, dep: str, ret: str, max_stops: int) -> l
 def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteState | None = None) -> dict[str, Any] | None:
     """Cheapest round-trip for one date pair, or None when there is nothing.
 
-    Two queries, cheapest across both. Google answers each with only a handful
-    of itineraries, ranked by its own idea of "best" rather than by price, and
-    with a stop cap of 2 that handful is dominated by odd connections. Measured
-    30 Sep 2026, BLR->KUL 15-18 Nov: max_stops=2 returned three fares, all
-    connecting, cheapest Vietjet via SGN at 61,372; max_stops=0 on the same
-    pair returned four non-stops from 30,083 (AirAsia). The board showed no
-    direct flight and a price double the real one. A non-stop-only query
-    surfaces the direct flights; the capped query keeps the cheap connections
-    that beat a non-stop on long-haul routes.
+    One capped query by default. History: on 30 Sep 2026 BLR->KUL 15-18 Nov
+    published 61,372 via Saigon while AirAsia flew it non-stop for ~30,000. A
+    second, non-stop-only query was added to surface direct flights; the real
+    cause turned out to be the "best flights" block nobody read (_parse_page).
+    With it read, the capped page carries the non-stops too, and the extra
+    query never beat it (nonstop_cheaper=0 over five origins, 5-6 Oct), so it
+    is off unless SCRAPE_NONSTOP_QUERY=1.
     """
     state = state or RouteState()
     priced: list[Any] = []
@@ -735,7 +742,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     answered = False
     capped_empty = False
     cheapest: dict[int, int] = {}
-    for cap in sorted({0, MAX_STOPS}):
+    for cap in (sorted({0, MAX_STOPS}) if NONSTOP_QUERY else [MAX_STOPS]):
         if cap == 0 and state.nonstop_dead and MAX_STOPS != 0:
             STATS["skipped_nonstop"] += 1
             continue
@@ -760,7 +767,10 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     # Oct passes. The page itself cannot be told from a real empty answer; the
     # context can. When the non-stop query found flights that same day, or the
     # route has priced earlier this pass, ask the capped query once more.
-    if capped_empty and (nonstop_found or state.ever_priced):
+    # Without the non-stop query there is no same-day evidence, so every empty
+    # capped answer gets one retry; a route with no service still dies after
+    # DEAD_AFTER days, at one extra request per pair.
+    if capped_empty and (nonstop_found or state.ever_priced or not NONSTOP_QUERY):
         STATS["empty_retried"] += 1
         time.sleep(DELAY * 2 + random.uniform(0, DELAY))
         again = _search(origin, dest, dep, ret, MAX_STOPS)

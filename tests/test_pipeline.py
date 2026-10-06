@@ -45,6 +45,8 @@ CAPTCHA = fixture("captcha")  # the real interstitial, IP and tokens removed
 class Base(unittest.TestCase):
     """Fresh counters, no sleeping, and a fake network."""
 
+    nonstop_query = True
+
     def setUp(self):
         scrape.BREAKER.update(streak=0, tripped=False, healthy=0)
         for k in scrape.STATS:
@@ -52,6 +54,9 @@ class Base(unittest.TestCase):
         patches = [
             mock.patch.object(scrape.time, "sleep", lambda s: None),
             mock.patch.object(scrape, "_fetch_html", side_effect=self.fetch),
+            # Most tests here pin the two-query mode they were written for;
+            # SingleQuery covers the default.
+            mock.patch.object(scrape, "NONSTOP_QUERY", self.nonstop_query),
         ]
         for p in patches:
             p.start()
@@ -240,6 +245,41 @@ class EmptyCappedRetry(Base):
         self.assertIsNone(scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18"))
         self.assertEqual(self.fetches, 2)
         self.assertEqual(scrape.STATS["empty_retried"], 0)
+
+
+class Defaults(unittest.TestCase):
+    @unittest.skipIf(os.environ.get("SCRAPE_NONSTOP_QUERY"), "overridden in this environment")
+    def test_nonstop_query_is_off_by_default(self):
+        self.assertFalse(scrape.NONSTOP_QUERY)
+
+
+class SingleQuery(Base):
+    """The default since 6 Oct 2026: one capped query per date pair."""
+
+    nonstop_query = False
+
+    def test_one_request_finds_the_nonstop(self):
+        self.pages = [fixture("blr_kul_2stop")]
+        fare = scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18")
+        self.assertEqual(self.fetches, 1)
+        self.assertEqual(fare["price"], 29828)
+        self.assertEqual(fare["outStops"], 0)
+
+    def test_empty_answer_is_retried_once(self):
+        self.pages = [fixture("pnq_hkt_nonstop_empty"), fixture("blr_kul_2stop")]
+        fare = scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18")
+        self.assertEqual(self.fetches, 2)
+        self.assertEqual(fare["price"], 29828)
+        self.assertEqual(scrape.STATS["empty_recovered"], 1)
+
+    def test_a_dead_route_still_dies(self):
+        state = scrape.RouteState()
+        for day in ["2026-10-15", "2026-10-28", "2026-11-15"]:
+            state.next_departure(day)
+            self.pages = [fixture("pnq_hkt_nonstop_empty")] * 2
+            self.assertIsNone(scrape.scrape_route(BLR, KUL, day, day, state))
+        state.next_departure("2026-11-28")
+        self.assertTrue(state.dead)
 
 
 class OriginGuard(Base):
