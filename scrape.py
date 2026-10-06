@@ -158,7 +158,7 @@ MAX_PRICE = 400_000
 # baselines in the README can be compared against a number, not a feeling.
 STATS = {"requests": 0, "skipped_dead": 0, "skipped_nonstop": 0, "unreadable": 0, "empty": 0,
          "timeouts": 0, "rejected_prices": 0, "failed": 0, "captcha": 0,
-         "nonstop_cheaper": 0, "unanswered": 0}
+         "nonstop_cheaper": 0, "unanswered": 0, "empty_retried": 0, "empty_recovered": 0}
 
 # Share of an origin's queries that may fail outright (timeout or unreadable,
 # after the retry) before its fares are withheld. The backend replaces an
@@ -571,6 +571,7 @@ class RouteState:
         self._dep_nonstop = False
         self._dep_nonstop_asked = False
         self._dep_answered = False
+        self.ever_priced = False
 
     @property
     def dead(self) -> bool:
@@ -590,6 +591,7 @@ class RouteState:
         self._dep = dep
         self._dep_answered |= answered or priced
         self._dep_priced |= priced
+        self.ever_priced |= priced
         self._dep_nonstop |= nonstop
         self._dep_nonstop_asked |= nonstop_asked
 
@@ -731,6 +733,7 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     nonstop_found = False
     nonstop_asked = False
     answered = False
+    capped_empty = False
     cheapest: dict[int, int] = {}
     for cap in sorted({0, MAX_STOPS}):
         if cap == 0 and state.nonstop_dead and MAX_STOPS != 0:
@@ -746,9 +749,28 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
         if cap == 0:
             nonstop_asked = True
             nonstop_found = bool(got)
+        elif not got:
+            capped_empty = True
         if got:
             cheapest[cap] = min(r.price for r in got)
         priced.extend(got)
+    # Google sometimes sends a complete-looking page with no results for a
+    # route that plainly has them — BLR->DEL and DEL->MAA, busy trunk routes,
+    # came back "no flights (up to 2 stops)" on whole departure days in the 5-6
+    # Oct passes. The page itself cannot be told from a real empty answer; the
+    # context can. When the non-stop query found flights that same day, or the
+    # route has priced earlier this pass, ask the capped query once more.
+    if capped_empty and (nonstop_found or state.ever_priced):
+        STATS["empty_retried"] += 1
+        time.sleep(DELAY * 2 + random.uniform(0, DELAY))
+        again = _search(origin, dest, dep, ret, MAX_STOPS)
+        if again:
+            STATS["empty_recovered"] += 1
+            print(f"      + {origin.code}->{dest.code} {dep}: capped query empty, then "
+                  f"{len(again)} priced on retry", flush=True)
+            answered = True
+            cheapest[MAX_STOPS] = min(r.price for r in again)
+            priced.extend(again)
     # The non-stop query exists because the capped page seemed to hide direct
     # flights. With both result blocks read it should not: the capped page's
     # "best flights" carried every non-stop on BLR->KUL. Count the pairs where
@@ -890,7 +912,8 @@ def main() -> int:
           f"skipped_dead_routes={STATS['skipped_dead']} skipped_nonstop={STATS['skipped_nonstop']} "
           f"unreadable={STATS['unreadable']} empty={STATS['empty']} timeouts={STATS['timeouts']} "
           f"rejected_prices={STATS['rejected_prices']} failed={STATS['failed']} captcha={STATS['captcha']} "
-          f"nonstop_cheaper={STATS['nonstop_cheaper']} unanswered={STATS['unanswered']}" + (" BLOCKED" if report["blocked"] else ""))
+          f"nonstop_cheaper={STATS['nonstop_cheaper']} unanswered={STATS['unanswered']} "
+          f"empty_retried={STATS['empty_retried']} empty_recovered={STATS['empty_recovered']}" + (" BLOCKED" if report["blocked"] else ""))
     return 3 if report["blocked"] else 0
 
 

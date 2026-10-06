@@ -216,6 +216,32 @@ class Unanswered(Base):
         self.assertEqual(scrape._parse_page(fixture("pnq_hkt_nonstop_empty")), [])
 
 
+class EmptyCappedRetry(Base):
+    EMPTY = "pnq_hkt_nonstop_empty"  # a complete page with no results
+
+    def test_empty_capped_page_on_a_flown_day_is_retried(self):
+        # Non-stop query finds flights; the capped query says "none" — wrong.
+        self.pages = [fixture("blr_kul_nonstop"), fixture(self.EMPTY), fixture("blr_kul_2stop")]
+        fare = scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18")
+        self.assertEqual(self.fetches, 3)
+        self.assertEqual(scrape.STATS["empty_retried"], 1)
+        self.assertEqual(scrape.STATS["empty_recovered"], 1)
+        self.assertEqual(fare["price"], 29828)
+
+    def test_empty_capped_page_on_a_route_priced_earlier_is_retried(self):
+        state = scrape.RouteState()
+        state.record("2026-10-15", True, False, False)
+        self.pages = [fixture(self.EMPTY), fixture(self.EMPTY), fixture("blr_kul_2stop")]
+        fare = scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18", state)
+        self.assertEqual(fare["price"], 29828)
+
+    def test_route_with_no_service_is_not_retried(self):
+        self.pages = [fixture(self.EMPTY), fixture(self.EMPTY)]
+        self.assertIsNone(scrape.scrape_route(BLR, KUL, "2026-11-15", "2026-11-18"))
+        self.assertEqual(self.fetches, 2)
+        self.assertEqual(scrape.STATS["empty_retried"], 0)
+
+
 class OriginGuard(Base):
     def run_origin(self, pages, n_dests=4):
         self.pages = list(pages)
