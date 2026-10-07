@@ -128,6 +128,20 @@
       "domestic": false
     },
     {
+      "slug": "hanoi",
+      "code": "HAN",
+      "city": "Hanoi",
+      "country": "Vietnam",
+      "domestic": false
+    },
+    {
+      "slug": "ho-chi-minh-city",
+      "code": "SGN",
+      "city": "Ho Chi Minh City",
+      "country": "Vietnam",
+      "domestic": false
+    },
+    {
       "slug": "reunion",
       "code": "RUN",
       "city": "Réunion",
