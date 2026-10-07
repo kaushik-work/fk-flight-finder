@@ -121,6 +121,13 @@
       "domestic": false
     },
     {
+      "slug": "kathmandu",
+      "code": "KTM",
+      "city": "Kathmandu",
+      "country": "Nepal",
+      "domestic": false
+    },
+    {
       "slug": "reunion",
       "code": "RUN",
       "city": "Réunion",
