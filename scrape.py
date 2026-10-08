@@ -118,6 +118,14 @@ MAX_STOPS = int(os.environ.get("SCRAPE_MAX_STOPS", "2"))
 # brings it back.
 NONSTOP_QUERY = os.environ.get("SCRAPE_NONSTOP_QUERY", "0") == "1"
 
+# Fraction taken off every scraped price before it is stored. The protobuf
+# endpoint never returns Google's cheapest tier, which a person sees in a
+# browser on a home connection; measured gaps ran 9.6-12.4% (browser_scrape.py,
+# 18 Sep 2026). On 8 Oct 2026 the owner chose a flat 10% cut to bring stored
+# prices in line with what travellers see. The raw figure is kept beside it as
+# scrapedPrice, so the cut can be re-measured or undone. 0 turns it off.
+PRICE_ADJUST = float(os.environ.get("SCRAPE_PRICE_ADJUST", "0.10"))
+
 # Optional rotating proxies, comma-separated. Empty means direct from the
 # droplet IP, which is the verified-working default.
 PROXY_URLS = [p.strip() for p in os.environ.get("PROXY_URLS", "").split(",") if p.strip()]
@@ -823,6 +831,11 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
     }
 
 
+def adjusted_price(scraped: int) -> int:
+    """The price that is stored and shown: the scraped price less PRICE_ADJUST."""
+    return int(round(scraped * (1 - PRICE_ADJUST)))
+
+
 def to_fare(origin: Place, dest: Place, dep: str, ret: str, fare: dict[str, Any], retrieved_at: str) -> dict[str, Any]:
     ident = hashlib.sha1(f"gf|{origin.code}|{dest.code}|{dep}|{ret}|{fare['price']}".encode()).hexdigest()[:16]
     nights = (date.fromisoformat(ret) - date.fromisoformat(dep)).days
@@ -840,7 +853,9 @@ def to_fare(origin: Place, dest: Place, dep: str, ret: str, fare: dict[str, Any]
         "returnDate": ret,
         "departureMonth": dep[:7],
         "nights": nights,
-        "price": fare["price"],
+        "price": adjusted_price(fare["price"]),
+        "scrapedPrice": fare["price"],
+        "priceAdjustment": PRICE_ADJUST,
         "currency": "INR",
         # Unknown stays null rather than becoming 0. Defaulting to zero is how
         # "we could not read the legs" turned into "Direct" on the page, which

@@ -126,7 +126,9 @@ class RealResponses(Base):
         self.assertIsNone(rec["inbound"]["stops"])
         self.assertEqual(rec["nights"], 3)
         self.assertEqual(rec["currency"], "INR")
-        self.assertEqual(rec["price"], 29828)
+        # Stored price carries the flat cut; the raw scrape is kept beside it.
+        self.assertEqual(rec["scrapedPrice"], 29828)
+        self.assertEqual(rec["price"], round(29828 * (1 - scrape.PRICE_ADJUST)))
 
 
 class DamagedResponses(Base):
@@ -264,6 +266,24 @@ class Defaults(unittest.TestCase):
     @unittest.skipIf(os.environ.get("SCRAPE_NONSTOP_QUERY"), "overridden in this environment")
     def test_nonstop_query_is_off_by_default(self):
         self.assertFalse(scrape.NONSTOP_QUERY)
+
+
+class PriceAdjust(unittest.TestCase):
+    @unittest.skipIf(os.environ.get("SCRAPE_PRICE_ADJUST"), "overridden in this environment")
+    def test_default_cut_is_ten_percent(self):
+        self.assertEqual(scrape.PRICE_ADJUST, 0.10)
+        self.assertEqual(scrape.adjusted_price(29828), 26845)
+        self.assertEqual(scrape.adjusted_price(10000), 9000)
+
+    def test_zero_turns_it_off(self):
+        with mock.patch.object(scrape, "PRICE_ADJUST", 0.0):
+            self.assertEqual(scrape.adjusted_price(29828), 29828)
+
+    def test_record_keeps_both(self):
+        fare = {"price": 30000, "outStops": 0, "inStops": None, "outDuration": 300, "inDuration": None,
+                "outLegs": [], "inLegs": [], "airline": "AirAsia"}
+        rec = scrape.to_fare(BLR, KUL, "2026-11-15", "2026-11-18", fare, "2026-10-08T00:00:00Z")
+        self.assertEqual((rec["price"], rec["scrapedPrice"], rec["priceAdjustment"]), (27000, 30000, 0.10))
 
 
 class SingleQuery(Base):

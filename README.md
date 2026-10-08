@@ -252,17 +252,20 @@ Rules carried over from the old spec, all of which were right:
 
 - **Never show an invented fare.** The old fixture provider refused to run in
   production for exactly this reason. Keep that refusal.
-- **No markup, and no buffer.** The price shown is the cheapest fare Google
-  returned for that date pair, rounded to whole rupees, passed through the
-  scraper, the store and the page untouched. Verified end to end.
+- **A flat 10% cut, and nothing else.** Since 8 Oct 2026 the stored price is
+  the cheapest fare Google returned for that date pair less 10%
+  (`SCRAPE_PRICE_ADJUST`, default `0.10`; `0` turns it off), rounded to whole
+  rupees. The raw scraped figure is stored beside it as `scrapedPrice`, with
+  the fraction as `priceAdjustment`.
 
-  The deleted implementation added a per-person display buffer, reasoning that
-  scraped fares read below live prices and a traveller clicking through to a
-  *higher* number has been misled. That was a fair argument and it was not
-  carried over — deliberately, on the view that honesty here is better served
-  by disclosure than by padding: every fare shows how old the observation is,
-  and the page says plainly it is not a live quote. Revisit if click-through
-  complaints suggest otherwise, but change the code and this line together.
+  Why: the protobuf endpoint never returns Google's cheapest tier, which a
+  person sees in a browser on a home connection, so unadjusted fares read high
+  — 9.6% and 12.4% on the two routes measured (see `browser_scrape.py`). The
+  owner chose a flat cut over per-route calibration. The known risk is the
+  other direction: on a route where the scrape already had the cheapest fare,
+  the stored price is 10% below anything bookable. If click-throughs show
+  that, measure the gap per route type with `browser_scrape.py` and replace
+  the flat figure. Change the code and this line together.
 - **A month means the month you depart in.** The return may fall in the next
   month, and a 28 Sep → 3 Oct trip is an ordinary September holiday — often the
   cheaper one. Sample late-month, not just mid-month.
