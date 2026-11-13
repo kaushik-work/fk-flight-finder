@@ -70,7 +70,7 @@ def _load_env_file() -> None:
 _load_env_file()
 
 # ── Configuration ────────────────────────────────────────────────────────────
-API_BASE = os.environ.get("API_BASE", "https://flightklub.com")
+API_BASE = os.environ.get("API_BASE", "https://www.trripah.com")
 SECRET = os.environ.get("FARE_INGEST_SECRET", "")
 
 # Months ahead, counting the current one. 4 gives five months of coverage,
