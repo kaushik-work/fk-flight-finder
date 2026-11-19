@@ -238,6 +238,48 @@
       "city": "Goa",
       "country": "India",
       "domestic": true
+    },
+    {
+      "slug": "hyderabad",
+      "code": "HYD",
+      "city": "Hyderabad",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "bangalore",
+      "code": "BLR",
+      "city": "Bangalore",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "pune",
+      "code": "PNQ",
+      "city": "Pune",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "ahmedabad",
+      "code": "AMD",
+      "city": "Ahmedabad",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "kochi",
+      "code": "COK",
+      "city": "Kochi",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "jaipur",
+      "code": "JAI",
+      "city": "Jaipur",
+      "country": "India",
+      "domestic": true
     }
   ]
 }
