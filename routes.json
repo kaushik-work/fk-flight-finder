@@ -231,6 +231,13 @@
       "city": "Kolkata",
       "country": "India",
       "domestic": true
+    },
+    {
+      "slug": "goa",
+      "code": "GOI",
+      "city": "Goa",
+      "country": "India",
+      "domestic": true
     }
   ]
 }
