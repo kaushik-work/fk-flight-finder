@@ -280,6 +280,48 @@
       "city": "Jaipur",
       "country": "India",
       "domestic": true
+    },
+    {
+      "slug": "shanghai",
+      "code": "PVG",
+      "city": "Shanghai",
+      "country": "China",
+      "domestic": false
+    },
+    {
+      "slug": "beijing",
+      "code": "PEK",
+      "city": "Beijing",
+      "country": "China",
+      "domestic": false
+    },
+    {
+      "slug": "guangzhou",
+      "code": "CAN",
+      "city": "Guangzhou",
+      "country": "China",
+      "domestic": false
+    },
+    {
+      "slug": "hong-kong",
+      "code": "HKG",
+      "city": "Hong Kong",
+      "country": "Hong Kong",
+      "domestic": false
+    },
+    {
+      "slug": "srinagar",
+      "code": "SXR",
+      "city": "Srinagar",
+      "country": "India",
+      "domestic": true
+    },
+    {
+      "slug": "port-blair",
+      "code": "IXZ",
+      "city": "Port Blair",
+      "country": "India",
+      "domestic": true
     }
   ]
 }
