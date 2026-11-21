@@ -78,17 +78,15 @@ SECRET = os.environ.get("FARE_INGEST_SECRET", "")
 MONTHS_AHEAD = int(os.environ.get("SCRAPE_MONTHS", "4"))
 
 # Trip lengths, in nights. Every value here multiplies the request count, so
-# this is the most expensive dial in the file: three lengths is three passes
-# over the whole origin x destination x date matrix.
+# this is the most expensive dial in the file.
 #
 # 5 leads because it is the default the board offers and the one most people
-# search. 3 and 7 bracket it — a long weekend and a full week — which is the
-# range the trip-length control exposes. Sampling every value from 3 to 7 is
-# not worth 5x the runtime: 4 and 6 price within a few hundred rupees of their
-# neighbours on these routes, and the control snaps to the nearest length we
-# actually hold rather than showing an empty page.
+# search. 3 to 7 are all sampled so the trip-length control can show every
+# length from a long weekend to a full week (4 and 6 were added later because
+# people asked for them). Only PRIMARY_NIGHTS is sampled on every departure
+# day, so each extra length adds one pair per route per month, not two.
 NIGHTS_LIST = sorted({
-    int(n) for n in os.environ.get("SCRAPE_NIGHTS", "3,5,7").split(",") if n.strip()
+    int(n) for n in os.environ.get("SCRAPE_NIGHTS", "3,4,5,6,7").split(",") if n.strip()
 })
 
 # The length the board defaults to, and the only one sampled on every departure
