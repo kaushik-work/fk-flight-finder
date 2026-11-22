@@ -1,0 +1,8 @@
+fast-flights==3.1.0
+greenlet==3.5.6
+playwright==1.63.0
+primp==2.0.1
+protobuf==7.36.2
+pyee==13.0.1
+selectolax==0.4.11
+typing_extensions==4.16.0

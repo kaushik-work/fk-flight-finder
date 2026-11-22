@@ -21,7 +21,7 @@ apt-get install -y python3-venv util-linux cron
 mkdir -p /opt/fk-flight-finder
 cd /opt/fk-flight-finder
 [ -d .venv ] || python3 -m venv .venv
-./.venv/bin/pip install -q "fast-flights==3.1.0"
+./.venv/bin/pip install -q -r requirements.txt   # the exact versions the first droplet runs
 
 touch .env && chmod 600 .env
 if grep -q '^SCRAPE_ORIGINS=' .env; then
