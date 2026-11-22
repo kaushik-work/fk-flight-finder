@@ -84,13 +84,13 @@ jobs:
 
       - name: Check the deploy secrets are set
         env:
-          DROPLET2_SSH_KEY: ${{ secrets.DROPLET2_SSH_KEY }}
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
           DROPLET2_KNOWN_HOSTS: ${{ secrets.DROPLET2_KNOWN_HOSTS }}
           DROPLET2_HOST: ${{ secrets.DROPLET2_HOST }}
-          DROPLET2_USER: ${{ secrets.DROPLET2_USER }}
+          DROPLET_USER: ${{ secrets.DROPLET_USER }}
         run: |
           missing=""
-          for n in DROPLET2_SSH_KEY DROPLET2_KNOWN_HOSTS DROPLET2_HOST DROPLET2_USER; do
+          for n in DROPLET_SSH_KEY DROPLET2_KNOWN_HOSTS DROPLET2_HOST DROPLET_USER; do
             [ -n "${!n}" ] || missing="$missing $n"
           done
           if [ -n "$missing" ]; then
@@ -101,7 +101,7 @@ jobs:
 
       - name: Set up SSH
         env:
-          KEY: ${{ secrets.DROPLET2_SSH_KEY }}
+          KEY: ${{ secrets.DROPLET_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DROPLET2_KNOWN_HOSTS }}
         run: |
           install -m 700 -d ~/.ssh
@@ -111,14 +111,14 @@ jobs:
 
       - name: Copy files
         env:
-          TARGET: ${{ secrets.DROPLET2_USER }}@${{ secrets.DROPLET2_HOST }}
+          TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET2_HOST }}
         run: |
           scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             scrape.py routes.json run.sh "$TARGET:/opt/fk-flight-finder/"
 
       - name: Check the new code, then restart if asked
         env:
-          TARGET: ${{ secrets.DROPLET2_USER }}@${{ secrets.DROPLET2_HOST }}
+          TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET2_HOST }}
           RESTART: ${{ github.event.inputs.restart }}
         run: |
           ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$TARGET" "RESTART='$RESTART' bash -s" <<'REMOTE'
