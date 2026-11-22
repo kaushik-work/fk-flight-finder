@@ -1,0 +1,60 @@
+name: Deploy to droplet
+
+# Copies scrape.py, routes.json and run.sh to the droplet whenever they change on main.
+# .env is never touched: it holds the ingest secret and is managed on the droplet.
+on:
+  push:
+    branches: [main]
+    paths: [scrape.py, routes.json, run.sh]
+  workflow_dispatch:
+    inputs:
+      restart:
+        description: "Restart the pass now (the city being scraped is discarded, saved cities stay)"
+        type: boolean
+        default: false
+
+concurrency: deploy-droplet
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          KEY: ${{ secrets.DROPLET_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DROPLET_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Copy files
+        env:
+          TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
+        run: |
+          scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            scrape.py routes.json run.sh "$TARGET:/opt/fk-flight-finder/"
+
+      - name: Check the new code, then restart if asked
+        env:
+          TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
+          RESTART: ${{ github.event.inputs.restart }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$TARGET" "RESTART='$RESTART' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/fk-flight-finder
+          chmod +x run.sh
+          ./.venv/bin/python -c 'import ast,json; ast.parse(open("scrape.py").read()); r=json.load(open("routes.json")); print("scrape.py parses;", len(r["destinations"]), "destinations")'
+          if [ "$RESTART" = "true" ]; then
+            pkill -f 'python scrape.py' || true
+            sleep 2
+            rm -f /var/lock/fk-flight-finder.started
+            nohup /opt/fk-flight-finder/run.sh >/dev/null 2>&1 &
+            echo "restarted the pass"
+          else
+            echo "files updated; the running pass finishes first and the next one starts on the new code"
+          fi
+          REMOTE
