@@ -96,10 +96,18 @@ NIGHTS_LIST = sorted({
 # breadth people actually browse and 3 and 7 still exist in every month.
 PRIMARY_NIGHTS = int(os.environ.get("SCRAPE_PRIMARY_NIGHTS", "5"))
 
+# Every sampled departure date gets every trip length in NIGHTS_LIST, so a date never shows only 5 nights. Set
+# SCRAPE_ALL_LENGTHS=0 to go back to the cheaper rule above (alternate lengths on the first day of the month only).
+ALL_LENGTHS = os.environ.get("SCRAPE_ALL_LENGTHS", "1") != "0"
+
+# One extra departure this many days from today, so the current month always has fares for the next fortnight
+# even after its 15th has passed. 0 turns it off.
+NEAR_DAYS = int(os.environ.get("SCRAPE_NEAR_DAYS", "10"))
+
 # Departure days sampled per month. 28 is deliberate: a 28 Sep -> 3 Oct trip is
 # an ordinary September holiday and often the cheaper one, and a mid-month-only
 # sample never sees it.
-SAMPLE_DAYS = [int(d) for d in os.environ.get("SCRAPE_DAYS", "15,28").split(",") if d.strip()]
+SAMPLE_DAYS = [int(d) for d in os.environ.get("SCRAPE_DAYS", "15").split(",") if d.strip()]
 
 # Seconds between requests, jittered. Do NOT lower this to go faster — a burst
 # is what earns an IP a CAPTCHA. The droplet's own IP works unproxied today
@@ -310,9 +318,13 @@ def sample_dates() -> list[tuple[str, str]]:
             for nights in NIGHTS_LIST:
                 # Alternates are sampled on the first departure day of the
                 # month only; see PRIMARY_NIGHTS.
-                if nights != PRIMARY_NIGHTS and day != SAMPLE_DAYS[0]:
+                if not ALL_LENGTHS and nights != PRIMARY_NIGHTS and day != SAMPLE_DAYS[0]:
                     continue
                 out.append((dep.isoformat(), (dep + timedelta(days=nights)).isoformat()))
+    if NEAR_DAYS > 0:
+        near = today + timedelta(days=NEAR_DAYS)
+        for nights in NIGHTS_LIST:
+            out.append((near.isoformat(), (near + timedelta(days=nights)).isoformat()))
     return sorted(set(out))
 
 
