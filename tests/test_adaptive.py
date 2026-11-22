@@ -23,6 +23,17 @@ class CoarseDates(unittest.TestCase):
         for m in ("2026-12", "2027-01", "2027-02", "2027-03"):
             self.assertGreaterEqual(sum(1 for x in d if x.startswith(m)), 4)
 
+    def test_each_month_spans_several_weekdays_not_one(self):
+        # Dates seven days apart share a weekday, which would hide that midweek fares are cheaper.
+        d = scrape.coarse_dates(date(2026, 11, 22))
+        for m in ("2026-12", "2027-01", "2027-02", "2027-03"):
+            weekdays = {date.fromisoformat(x).weekday() for x in d if x.startswith(m)}
+            self.assertGreaterEqual(len(weekdays), 4, m)
+
+    def test_the_current_month_is_not_left_empty(self):
+        d = scrape.coarse_dates(date(2026, 11, 22))
+        self.assertTrue(any(x.startswith("2026-11") for x in d))  # the date four days out
+
     def test_nothing_inside_three_days(self):
         today = date(2026, 11, 22)
         for x in scrape.coarse_dates(today):

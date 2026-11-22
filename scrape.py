@@ -100,9 +100,9 @@ PRIMARY_NIGHTS = int(os.environ.get("SCRAPE_PRIMARY_NIGHTS", "5"))
 # SCRAPE_ALL_LENGTHS=0 to go back to the cheaper rule above (alternate lengths on the first day of the month only).
 ALL_LENGTHS = os.environ.get("SCRAPE_ALL_LENGTHS", "1") != "0"
 
-# One extra departure this many days from today, so the current month always has fares for the next fortnight
-# even after its 15th has passed. 0 turns it off.
-NEAR_DAYS = int(os.environ.get("SCRAPE_NEAR_DAYS", "10"))
+# Extra departures this many days from today (default: 4 and 10), so the current month always has fares for the
+# next fortnight even after its early days have passed. Empty turns it off.
+NEAR_DAYS = [int(n) for n in os.environ.get("SCRAPE_NEAR_DAYS", "4,10").split(",") if n.strip() and int(n) > 0]
 
 # Departure days sampled per month. 28 is deliberate: a 28 Sep -> 3 Oct trip is
 # an ordinary September holiday and often the cheaper one, and a mid-month-only
@@ -321,8 +321,8 @@ def sample_dates() -> list[tuple[str, str]]:
                 if not ALL_LENGTHS and nights != PRIMARY_NIGHTS and day != SAMPLE_DAYS[0]:
                     continue
                 out.append((dep.isoformat(), (dep + timedelta(days=nights)).isoformat()))
-    if NEAR_DAYS > 0:
-        near = today + timedelta(days=NEAR_DAYS)
+    for days in NEAR_DAYS:
+        near = today + timedelta(days=days)
         for nights in NIGHTS_LIST:
             out.append((near.isoformat(), (near + timedelta(days=nights)).isoformat()))
     return sorted(set(out))
@@ -336,25 +336,28 @@ def sample_dates() -> list[tuple[str, str]]:
 # That finds a much better monthly low than a fixed day, stores several real dates per month, and still gives every
 # month all of 3 to 7 nights on its best date. SCRAPE_MODE=grid goes back to the fixed-day grid above.
 SEARCH_MODE = os.environ.get("SCRAPE_MODE", "adaptive")
-COARSE_DAYS = [int(d) for d in os.environ.get("SCRAPE_COARSE_DAYS", "4,11,18,25").split(",") if d.strip()]
+
+# Step one takes one departure per week of each month, and each week on a DIFFERENT weekday (Monday is 0). Dates a
+# fixed seven days apart would all fall on one weekday, and the weekday is the biggest thing that moves a fare:
+# a month of Fridays can never show that Tuesdays are cheaper. Tue, Thu, Sat, Mon covers the useful spread.
+COARSE_WEEKDAYS = [int(d) for d in os.environ.get("SCRAPE_COARSE_WEEKDAYS", "1,3,5,0").split(",") if d.strip()]
 
 
 def coarse_dates(today: date | None = None) -> list[str]:
-    """Step-one departure dates: COARSE_DAYS of every month, plus one NEAR_DAYS from today."""
+    """Step-one departure dates: week k of every month on COARSE_WEEKDAYS[k], plus the NEAR_DAYS dates."""
     today = today or date.today()
     out: set[date] = set()
     for i in range(0, MONTHS_AHEAD + 1):
         year_offset, month_index = divmod(today.month - 1 + i, 12)
-        for day in COARSE_DAYS:
-            try:
-                dep = date(today.year + year_offset, month_index + 1, day)
-            except ValueError:
-                continue
-            if dep <= today + timedelta(days=3):
+        year, month = today.year + year_offset, month_index + 1
+        for week, weekday in enumerate(COARSE_WEEKDAYS):
+            week_start = date(year, month, 1 + 7 * week)  # the 1st, 8th, 15th, 22nd: always inside the month
+            dep = week_start + timedelta(days=(weekday - week_start.weekday()) % 7)
+            if dep.month != month or dep <= today + timedelta(days=3):
                 continue
             out.add(dep)
-    if NEAR_DAYS > 0:
-        out.add(today + timedelta(days=NEAR_DAYS))
+    for days in NEAR_DAYS:
+        out.add(today + timedelta(days=days))
     return sorted(d.isoformat() for d in out)
 
 
