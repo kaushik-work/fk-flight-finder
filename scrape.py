@@ -410,6 +410,34 @@ def scrape_destination(origin: Place, dest: Place, dates: list[str], state: "Rou
     return found
 
 
+# --- Empty spells ----------------------------------------------------------------------------------------------------
+# On 22 Nov 2026 both droplets spent about an hour answering "no flights" to routes that plainly fly (BLR to RUH,
+# NBO and so on): 40 of the first 52 routes were written off, then found fares when asked again later. A pass that
+# keeps going through such a spell burns its requests and then pays for a second full search of every route. So when
+# a route looks dead, a canary (a route that always has flights) is asked first. If the canary is empty too, the
+# empties are Google's, not the route's: wait, then ask again, and only write a route off when the canary is healthy.
+CANARY_DEST = os.environ.get("SCRAPE_CANARY", "dubai")
+WAVE_PAUSE = int(os.environ.get("SCRAPE_WAVE_PAUSE", "600"))  # seconds between canary checks while Google is empty
+WAVE_MAX = int(os.environ.get("SCRAPE_WAVE_MAX", "9"))  # at most this many waits per dead route (about 90 minutes)
+
+
+def google_is_answering(origin: Place, dests: list[Place], dates: list[str], search: Any = None, pause: Any = None) -> bool:
+    """True when a busy route prices on one of two dates; two empties in a row mean Google is in an empty spell."""
+    search = search or scrape_route
+    pause = pause or (lambda: time.sleep(DELAY + random.uniform(0, DELAY * 0.4)))
+    canary = next((d for d in dests if d.slug == CANARY_DEST and d.code != origin.code), None) \
+        or next((d for d in dests if d.code != origin.code), None)
+    if canary is None or not dates:
+        return True
+    for dep in (dates[len(dates) // 3], dates[(2 * len(dates)) // 3]):
+        fare = search(origin, canary, dep, _return_date(dep, PRIMARY_NIGHTS), RouteState())
+        breaker_check()
+        pause()
+        if fare:
+            return True
+    return False
+
+
 def estimate_requests(routes: int, dates: list[str]) -> int:
     """Upper bound: every coarse date asked, every month priced and refined."""
     months = len({d[:7] for d in dates})
@@ -1094,12 +1122,22 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
             state = RouteState()
             if SEARCH_MODE != "grid":
                 found = scrape_destination(origin, dest, [dep for dep, _ in date_pairs], state)
-                # Google sometimes answers "no flights" for a busy route in waves lasting minutes. A route written
-                # off as dead is asked again once at the end of the city, when that wave has passed.
                 if state.dead:
-                    second_chance.append(dest)
-                    held[dest.code] = found
-                    continue
+                    # Is this route dead, or is Google in an empty spell? Ask the canary; while it is empty, wait.
+                    waited = 0
+                    while waited < WAVE_MAX and not google_is_answering(origin, dests, [dep for dep, _ in date_pairs]):
+                        waited += 1
+                        print(f"   Google is answering 'no flights' to a busy route too: waiting {WAVE_PAUSE // 60} min "
+                              f"({waited}/{WAVE_MAX}) before judging {dest.code}", flush=True)
+                        time.sleep(WAVE_PAUSE)
+                    if waited:
+                        state = RouteState()
+                        found = scrape_destination(origin, dest, [dep for dep, _ in date_pairs], state)
+                    # Still dead with a healthy canary: asked once more at the end of the city, then written off.
+                    if state.dead:
+                        second_chance.append(dest)
+                        held[dest.code] = found
+                        continue
                 date_pairs_for_loop: list[tuple[str, str]] = []
             else:
                 date_pairs_for_loop = date_pairs

@@ -106,6 +106,7 @@ class SecondChance(unittest.TestCase):
 
         posted = {}
         with mock.patch.object(scrape, "scrape_destination", fake), \
+             mock.patch.object(scrape, "google_is_answering", lambda *a, **k: True), \
              mock.patch.object(scrape, "to_fare", lambda o, d, dep, ret, f, t: {"dest": d.code}), \
              mock.patch.object(scrape, "post_fares", lambda slug, fares, dry: posted.setdefault("fares", fares) is not None):
             args = argparse.Namespace(limit=0, dry_run=True)
@@ -113,6 +114,57 @@ class SecondChance(unittest.TestCase):
         self.assertEqual(calls.count("DXB"), 2)  # asked, written off, asked again
         self.assertEqual(calls.count("BKK"), 1)  # a healthy route is not asked twice
         self.assertEqual(sum(1 for f in posted["fares"] if f["dest"] == "DXB"), 3)
+
+
+class EmptySpells(unittest.TestCase):
+    def run_city(self, canary_answers):
+        """A city of one route that looks dead, with the canary answering from `canary_answers` (True = prices)."""
+        from unittest import mock
+        import argparse
+        slept, scraped = [], []
+        answers = iter(canary_answers)
+
+        def fake_destination(origin, dest, dates, state=None, **kw):
+            scraped.append(dest.code)
+            if len(scraped) == 1:
+                state.empty_streak = scrape.DEAD_AFTER  # written off the first time
+                return []
+            return [("2026-12-11", "2026-12-16", {"price": 20000})]
+
+        def fake_canary(origin, dests, dates, **kw):
+            return next(answers)
+
+        posted = {}
+        dubai = scrape.Place("dubai", "DXB", "Dubai", "UAE")
+        with mock.patch.object(scrape, "scrape_destination", fake_destination), \
+             mock.patch.object(scrape, "google_is_answering", fake_canary), \
+             mock.patch.object(scrape.time, "sleep", lambda s: slept.append(s)), \
+             mock.patch.object(scrape, "to_fare", lambda o, d, dep, ret, f, t: {"dest": d.code}), \
+             mock.patch.object(scrape, "post_fares", lambda slug, fares, dry: posted.setdefault("fares", fares) is not None):
+            scrape._run_origins([BLR], [BKK], [("2026-12-04", "2026-12-09")], argparse.Namespace(limit=0, dry_run=True), {"origins": {}})
+        return slept, scraped, posted
+
+    def test_waits_while_the_canary_is_empty_then_asks_the_route_again(self):
+        slept, scraped, posted = self.run_city([False, False, True])
+        self.assertEqual(slept, [scrape.WAVE_PAUSE, scrape.WAVE_PAUSE])  # two empty checks, two waits
+        self.assertEqual(scraped, ["BKK", "BKK"])  # judged again from scratch after the spell
+        self.assertEqual(len(posted["fares"]), 1)
+
+    def test_a_healthy_canary_means_the_route_really_is_dead(self):
+        slept, scraped, posted = self.run_city([True])
+        self.assertEqual(slept, [])  # no waiting
+        self.assertIn("BKK", scraped)
+
+    def test_canary_needs_two_empties_in_a_row_to_call_it_a_spell(self):
+        calls = []
+
+        def search(o, d, dep, ret, state):
+            calls.append(dep)
+            return {"price": 1} if len(calls) == 2 else None  # empty once, then prices
+
+        dests = [scrape.Place("dubai", "DXB", "Dubai", "UAE"), BKK]
+        self.assertTrue(scrape.google_is_answering(BLR, dests, ["2026-12-04", "2026-12-11", "2026-12-18"], search=search, pause=lambda: None))
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":
