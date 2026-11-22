@@ -322,6 +322,97 @@
       "city": "Port Blair",
       "country": "India",
       "domestic": true
+    },
+    {
+      "slug": "moscow",
+      "code": "MOW",
+      "city": "Moscow",
+      "country": "Russia",
+      "domestic": false
+    },
+    {
+      "slug": "seoul",
+      "code": "ICN",
+      "city": "Seoul",
+      "country": "South Korea",
+      "domestic": false
+    },
+    {
+      "slug": "nairobi",
+      "code": "NBO",
+      "city": "Nairobi",
+      "country": "Kenya",
+      "domestic": false
+    },
+    {
+      "slug": "riyadh",
+      "code": "RUH",
+      "city": "Riyadh",
+      "country": "Saudi Arabia",
+      "domestic": false
+    },
+    {
+      "slug": "jeddah",
+      "code": "JED",
+      "city": "Jeddah",
+      "country": "Saudi Arabia",
+      "domestic": false
+    },
+    {
+      "slug": "almaty",
+      "code": "ALA",
+      "city": "Almaty",
+      "country": "Kazakhstan",
+      "domestic": false
+    },
+    {
+      "slug": "zanzibar",
+      "code": "ZNZ",
+      "city": "Zanzibar",
+      "country": "Tanzania",
+      "domestic": false
+    },
+    {
+      "slug": "athens",
+      "code": "ATH",
+      "city": "Athens",
+      "country": "Greece",
+      "domestic": false
+    },
+    {
+      "slug": "new-york",
+      "code": "NYC",
+      "city": "New York",
+      "country": "United States",
+      "domestic": false
+    },
+    {
+      "slug": "san-francisco",
+      "code": "SFO",
+      "city": "San Francisco",
+      "country": "United States",
+      "domestic": false
+    },
+    {
+      "slug": "los-angeles",
+      "code": "LAX",
+      "city": "Los Angeles",
+      "country": "United States",
+      "domestic": false
+    },
+    {
+      "slug": "paro",
+      "code": "PBH",
+      "city": "Paro",
+      "country": "Bhutan",
+      "domestic": false
+    },
+    {
+      "slug": "agatti",
+      "code": "AGX",
+      "city": "Agatti (Lakshadweep)",
+      "country": "India",
+      "domestic": true
     }
   ]
 }
