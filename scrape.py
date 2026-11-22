@@ -328,6 +328,91 @@ def sample_dates() -> list[tuple[str, str]]:
     return sorted(set(out))
 
 
+# --- Two-step search -----------------------------------------------------------------------------------------------
+# One Google request prices one exact date pair, so "the cheapest day of the month" cannot be read off a calendar
+# (Google gated its price-graph RPC in Aug 2026). Instead of trying every day, the search is done in two steps:
+#   1. price the primary trip length on a few dates spread through each month (weekly steps);
+#   2. in each month, take the cheapest of those dates and price every other trip length on that same day.
+# That finds a much better monthly low than a fixed day, stores several real dates per month, and still gives every
+# month all of 3 to 7 nights on its best date. SCRAPE_MODE=grid goes back to the fixed-day grid above.
+SEARCH_MODE = os.environ.get("SCRAPE_MODE", "adaptive")
+COARSE_DAYS = [int(d) for d in os.environ.get("SCRAPE_COARSE_DAYS", "4,11,18,25").split(",") if d.strip()]
+
+
+def coarse_dates(today: date | None = None) -> list[str]:
+    """Step-one departure dates: COARSE_DAYS of every month, plus one NEAR_DAYS from today."""
+    today = today or date.today()
+    out: set[date] = set()
+    for i in range(0, MONTHS_AHEAD + 1):
+        year_offset, month_index = divmod(today.month - 1 + i, 12)
+        for day in COARSE_DAYS:
+            try:
+                dep = date(today.year + year_offset, month_index + 1, day)
+            except ValueError:
+                continue
+            if dep <= today + timedelta(days=3):
+                continue
+            out.add(dep)
+    if NEAR_DAYS > 0:
+        out.add(today + timedelta(days=NEAR_DAYS))
+    return sorted(d.isoformat() for d in out)
+
+
+def _return_date(dep: str, nights: int) -> str:
+    return (date.fromisoformat(dep) + timedelta(days=nights)).isoformat()
+
+
+def scrape_destination(origin: Place, dest: Place, dates: list[str], state: "RouteState | None" = None,
+                       search: Any = None, pause: Any = None) -> list[tuple[str, str, dict[str, Any]]]:
+    """Both steps for one route. Returns (departure, return, fare) for every date pair that priced.
+
+    `search` and `pause` can be swapped out, which is how the tests run this without a network.
+    """
+    search = search or scrape_route
+    pause = pause or (lambda: time.sleep(DELAY + random.uniform(0, DELAY * 0.4)))
+    state = state or RouteState()
+    found: list[tuple[str, str, dict[str, Any]]] = []
+    best: dict[str, tuple[int, str]] = {}  # month -> (cheapest price, its date)
+
+    for n, dep in enumerate(dates):
+        state.next_departure(dep)
+        if state.dead:
+            STATS["skipped_dead"] += len(dates) - n
+            print(f"   {dest.code} — no fares on {DEAD_AFTER} departure dates running, skipping {len(dates) - n} more", flush=True)
+            return found
+        ret = _return_date(dep, PRIMARY_NIGHTS)
+        fare = search(origin, dest, dep, ret, state)
+        breaker_check()
+        pause()
+        if fare:
+            found.append((dep, ret, fare))
+            month = dep[:7]
+            if month not in best or fare["price"] < best[month][0]:
+                best[month] = (fare["price"], dep)
+
+    # Step two. A fresh state per call, already marked as priced, so a length that happens to have no flights on the
+    # best day neither writes the route off nor counts toward its empty streak.
+    for month, (_, dep) in sorted(best.items()):
+        for nights in NIGHTS_LIST:
+            if nights == PRIMARY_NIGHTS:
+                continue
+            fine = RouteState()
+            fine.ever_priced = True
+            ret = _return_date(dep, nights)
+            fare = search(origin, dest, dep, ret, fine)
+            breaker_check()
+            pause()
+            if fare:
+                found.append((dep, ret, fare))
+    return found
+
+
+def estimate_requests(routes: int, dates: list[str]) -> int:
+    """Upper bound: every coarse date asked, every month priced and refined."""
+    months = len({d[:7] for d in dates})
+    return routes * (len(dates) + months * (len(NIGHTS_LIST) - 1))
+
+
 def _proxy_for(attempt: int) -> str | None:
     if not PROXY_URLS:
         return None
@@ -929,18 +1014,31 @@ def main() -> int:
     args = parser.parse_args()
 
     all_origins, dests = load_routes()
-    origins = [o for o in all_origins if not args.origins or o.slug in args.origins]
+    # SCRAPE_ORIGINS lets one droplet take only some cities, so two droplets can share a pass.
+    wanted = args.origins or [o.strip() for o in os.environ.get("SCRAPE_ORIGINS", "").split(",") if o.strip()]
+    origins = [o for o in all_origins if not wanted or o.slug in wanted]
     if not origins:
         print(f"No matching origins. Known: {', '.join(o.slug for o in all_origins)}", file=sys.stderr)
         return 2
 
-    date_pairs = sample_dates()
-    months = sorted({dep[:7] for dep, _ in date_pairs})
-    print(f"{len(origins)} origins x {len(dests)} destinations x {len(date_pairs)} date pairs "
-          f"(trip lengths: {', '.join(str(n) for n in NIGHTS_LIST)} nights)")
-    print(f"months: {', '.join(months)}")
-    print(f"~{len(origins) * len(dests) * len(date_pairs)} requests, ~{DELAY}s apart"
-          f"{' via ' + str(len(PROXY_URLS)) + ' proxies' if PROXY_URLS else ' direct'}\n", flush=True)
+    adaptive = SEARCH_MODE != "grid"
+    if adaptive:
+        date_pairs = [(d, _return_date(d, PRIMARY_NIGHTS)) for d in coarse_dates()]
+        months = sorted({dep[:7] for dep, _ in date_pairs})
+        routes = len(origins) * max(0, len(dests) - 1)
+        print(f"{len(origins)} origins x {len(dests)} destinations, two-step search: "
+              f"{len(date_pairs)} dates at {PRIMARY_NIGHTS} nights, then {', '.join(str(n) for n in NIGHTS_LIST if n != PRIMARY_NIGHTS)} nights on each month's cheapest date")
+        print(f"months: {', '.join(months)}")
+        print(f"~{estimate_requests(routes, [d for d, _ in date_pairs])} requests at most, ~{DELAY}s apart"
+              f"{' via ' + str(len(PROXY_URLS)) + ' proxies' if PROXY_URLS else ' direct'}\n", flush=True)
+    else:
+        date_pairs = sample_dates()
+        months = sorted({dep[:7] for dep, _ in date_pairs})
+        print(f"{len(origins)} origins x {len(dests)} destinations x {len(date_pairs)} date pairs "
+              f"(trip lengths: {', '.join(str(n) for n in NIGHTS_LIST)} nights)")
+        print(f"months: {', '.join(months)}")
+        print(f"~{len(origins) * len(dests) * len(date_pairs)} requests, ~{DELAY}s apart"
+              f"{' via ' + str(len(PROXY_URLS)) + ' proxies' if PROXY_URLS else ' direct'}\n", flush=True)
 
     started = time.time()
     report: dict[str, Any] = {"startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "origins": {}, "blocked": False}
@@ -977,7 +1075,12 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
         for dest in targets:
             found: list[tuple[str, str, dict[str, Any]]] = []
             state = RouteState()
-            for n, (dep, ret) in enumerate(date_pairs):
+            if SEARCH_MODE != "grid":
+                found = scrape_destination(origin, dest, [dep for dep, _ in date_pairs], state)
+                date_pairs_for_loop: list[tuple[str, str]] = []
+            else:
+                date_pairs_for_loop = date_pairs
+            for n, (dep, ret) in enumerate(date_pairs_for_loop):
                 state.next_departure(dep)
                 if state.dead:
                     left = len(date_pairs) - n
