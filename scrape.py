@@ -1019,3 +1019,5 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# Deploy pipeline check: pushing this file makes GitHub Actions copy it to the droplet.
