@@ -1067,16 +1067,36 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
     for origin in origins:
         print(f"[{origin.slug}] {origin.code}", flush=True)
         fares: list[dict[str, Any]] = []
+        held: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
         sent_before, failed_before = STATS["requests"], STATS["failed"]
         targets = [d for d in dests if d.code != origin.code and (origin.code, d.code) not in SKIP_ROUTES]
         if args.limit:
             targets = targets[: args.limit]
 
+        def record(dest: Place, found: list[tuple[str, str, dict[str, Any]]]) -> None:
+            if found:
+                retrieved = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                for dep, ret, fare in found:
+                    fares.append(to_fare(origin, dest, dep, ret, fare, retrieved))
+                cheapest = min(found, key=lambda f: f[2]["price"])
+                got = sorted({dep[:7] for dep, _, _ in found})
+                print(f"   {dest.code} {len(found)} fares over {', '.join(got)} "
+                      f"| cheapest {cheapest[0]} INR {cheapest[2]['price']:,}", flush=True)
+            else:
+                print(f"   {dest.code} — nothing", flush=True)
+
+        second_chance: list[Place] = []
         for dest in targets:
             found: list[tuple[str, str, dict[str, Any]]] = []
             state = RouteState()
             if SEARCH_MODE != "grid":
                 found = scrape_destination(origin, dest, [dep for dep, _ in date_pairs], state)
+                # Google sometimes answers "no flights" for a busy route in waves lasting minutes. A route written
+                # off as dead is asked again once at the end of the city, when that wave has passed.
+                if state.dead:
+                    second_chance.append(dest)
+                    held[dest.code] = found
+                    continue
                 date_pairs_for_loop: list[tuple[str, str]] = []
             else:
                 date_pairs_for_loop = date_pairs
@@ -1092,16 +1112,12 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
                 time.sleep(DELAY + random.uniform(0, DELAY * 0.4))
                 if fare:
                     found.append((dep, ret, fare))
-            if found:
-                retrieved = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                for dep, ret, fare in found:
-                    fares.append(to_fare(origin, dest, dep, ret, fare, retrieved))
-                cheapest = min(found, key=lambda f: f[2]["price"])
-                got = sorted({dep[:7] for dep, _, _ in found})
-                print(f"   {dest.code} {len(found)} fares over {', '.join(got)} "
-                      f"| cheapest {cheapest[0]} INR {cheapest[2]['price']:,}", flush=True)
-            else:
-                print(f"   {dest.code} — nothing", flush=True)
+            record(dest, found)
+
+        for dest in second_chance:
+            print(f"   {dest.code} — asking again, it was written off earlier", flush=True)
+            again = scrape_destination(origin, dest, [dep for dep, _ in date_pairs], RouteState())
+            record(dest, again if len(again) > len(held[dest.code]) else held[dest.code])
 
         sent = STATS["requests"] - sent_before
         failed = STATS["failed"] - failed_before
@@ -1123,4 +1139,3 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# Deploy pipeline check: pushing this file makes GitHub Actions copy it to the droplet.

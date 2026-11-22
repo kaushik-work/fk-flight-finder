@@ -79,5 +79,30 @@ class TwoSteps(unittest.TestCase):
         self.assertEqual(scrape.estimate_requests(10, d), 10 * (len(d) + months * (len(scrape.NIGHTS_LIST) - 1)))
 
 
+class SecondChance(unittest.TestCase):
+    def test_a_route_written_off_is_asked_again_once_and_the_better_answer_is_kept(self):
+        from unittest import mock
+        import argparse
+        calls = []
+
+        def fake(origin, dest, dates, state=None, **kw):
+            calls.append(dest.code)
+            first = calls.count(dest.code) == 1
+            if dest.code == "DXB" and first:
+                state.empty_streak = scrape.DEAD_AFTER  # looks dead: Google answered "no flights" three days running
+                return []
+            return [("2026-12-11", "2026-12-16", {"price": 20000, "airline": "x", "stops": 0, "segments": []})] * (3 if dest.code == "DXB" else 2)
+
+        posted = {}
+        with mock.patch.object(scrape, "scrape_destination", fake), \
+             mock.patch.object(scrape, "to_fare", lambda o, d, dep, ret, f, t: {"dest": d.code}), \
+             mock.patch.object(scrape, "post_fares", lambda slug, fares, dry: posted.setdefault("fares", fares) is not None):
+            args = argparse.Namespace(limit=0, dry_run=True)
+            scrape._run_origins([BLR], [BKK, scrape.Place("dubai", "DXB", "Dubai", "UAE")], [("2026-12-04", "2026-12-09")], args, {"origins": {}})
+        self.assertEqual(calls.count("DXB"), 2)  # asked, written off, asked again
+        self.assertEqual(calls.count("BKK"), 1)  # a healthy route is not asked twice
+        self.assertEqual(sum(1 for f in posted["fares"] if f["dest"] == "DXB"), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
