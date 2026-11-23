@@ -587,12 +587,28 @@ class _Seg:
 
 
 class _Itinerary:
-    __slots__ = ("price", "flights", "airlines")
+    __slots__ = ("price", "flights", "airlines", "baggage_links")
 
-    def __init__(self, price: int, flights: list[_Seg], airlines: list[str]) -> None:
+    def __init__(self, price: int, flights: list[_Seg], airlines: list[str], baggage_links: dict[str, str] | None = None) -> None:
         self.price = price
         self.flights = flights
         self.airlines = airlines
+        # Airline name -> that airline's own baggage page. Google's data carries these links, not the allowance
+        # itself: the weights and fees per fare are not in the response we read.
+        self.baggage_links = baggage_links or {}
+
+
+def _baggage_links(payload: Any) -> dict[str, str]:
+    """Airline name -> baggage page, from payload[11]: [[code, name, url], ...]. Anything odd gives an empty map."""
+    try:
+        block = payload[11] if len(payload) > 11 else None
+        return {
+            str(row[1]): str(row[2])
+            for row in (block or [])
+            if isinstance(row, list) and len(row) >= 3 and isinstance(row[2], str) and row[2].startswith("http")
+        }
+    except (TypeError, IndexError):
+        return {}
 
 
 def _parse_page(html: str) -> list[_Itinerary]:
@@ -636,6 +652,7 @@ def _parse_page(html: str) -> list[_Itinerary]:
             raise Unanswered(f"no results in a {len(payload)}-slot payload")
         return []
 
+    baggage_links = _baggage_links(payload)
     out: list[_Itinerary] = []
     for entry in items:
         try:
@@ -658,7 +675,7 @@ def _parse_page(html: str) -> list[_Itinerary]:
                         plane_type=sf[17] if len(sf) > 17 else None,
                     )
                 )
-            out.append(_Itinerary(int(round(price)), segs, list(flight[1] or [])))
+            out.append(_Itinerary(int(round(price)), segs, list(flight[1] or []), baggage_links))
         except (IndexError, TypeError, ValueError):
             continue  # one malformed itinerary must not cost the rest
     return out
@@ -954,6 +971,11 @@ def scrape_route(origin: Place, dest: Place, dep: str, ret: str, state: RouteSta
         "outDuration": _sum_duration(out_segs),
         "inDuration": _sum_duration(in_segs),
         "airline": (airlines[0] if airlines else None) or "Multiple airlines",
+        "baggage": [
+            {"airline": name, "url": getattr(best, "baggage_links", {}).get(name)}
+            for name in airlines
+            if getattr(best, "baggage_links", {}).get(name)
+        ],
     }
 
 
@@ -1001,6 +1023,8 @@ def to_fare(origin: Place, dest: Place, dep: str, ret: str, fare: dict[str, Any]
             "airlineName": fare["airline"],
         },
         "deepLink": deep_link,
+        # Each airline's own baggage page, as Google lists it. The allowance itself is not in the data.
+        "baggage": fare.get("baggage") or [],
         "source": "google_flights",
         "retrievedAt": retrieved_at,
     }

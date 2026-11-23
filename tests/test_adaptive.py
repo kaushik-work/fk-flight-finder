@@ -167,5 +167,20 @@ class EmptySpells(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class BaggageLinks(unittest.TestCase):
+    @unittest.skipUnless(__import__("importlib.util").util.find_spec("selectolax"), "selectolax is only installed on the droplets")
+    def test_links_are_read_from_a_real_google_page(self):
+        from test_pipeline import fixture
+        its = scrape._parse_page(fixture("blr_kul_nonstop"))
+        self.assertTrue(its)
+        links = its[0].baggage_links
+        self.assertEqual(links.get("IndiGo"), "https://www.goindigo.in/baggage/baggage-allowance.html")
+        self.assertIn("AirAsia", links)
+
+    def test_a_payload_without_the_block_gives_no_links(self):
+        self.assertEqual(scrape._baggage_links([None] * 5), {})
+        self.assertEqual(scrape._baggage_links(None), {})
+
+
 if __name__ == "__main__":
     unittest.main()
