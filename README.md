@@ -17,8 +17,9 @@ nothing, the old fares stay.
      default 4 and 10 days out) so the current month is never empty.
   2. Fine pass: 3, 4, 6 and 7 nights on each month's cheapest coarse date.
 - **Pacing:** about 5 s between requests plus jitter (about 5.8 s measured).
-- **Price:** Google's cheapest fare less nothing, then `+10%` (`SCRAPE_PRICE_ADJUST`,
-  default 0.10). The raw figure is stored as `scrapedPrice`. Fares outside
+- **Price:** the stored price is Google's cheapest fare **less 10%** (`SCRAPE_PRICE_ADJUST`,
+  default 0.10; 0 turns it off), because the protobuf endpoint never returns Google's
+  cheapest tier. The raw figure is stored as `scrapedPrice`. Fares outside
   INR 1,500 to 400,000 are dropped.
 - **Dead routes:** a route is written off after 3 empty dates in a row
   (`DEAD_AFTER`). Written-off routes get a second chance at the end of the city.
