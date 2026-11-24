@@ -17,8 +17,8 @@ nothing, the old fares stay.
      default 4 and 10 days out) so the current month is never empty.
   2. Fine pass: 3, 4, 6 and 7 nights on each month's cheapest coarse date.
 - **Pacing:** about 5 s between requests plus jitter (about 5.8 s measured).
-- **Price:** the stored price is Google's cheapest fare **less 10%** (`SCRAPE_PRICE_ADJUST`,
-  default 0.10; 0 turns it off), because the protobuf endpoint never returns Google's
+- **Price:** the stored price is Google's cheapest fare **less 5%** (`SCRAPE_PRICE_ADJUST`,
+  default 0.05, cut from 10% on 24 Nov 2026; 0 turns it off), because the protobuf endpoint never returns Google's
   cheapest tier. The raw figure is stored as `scrapedPrice`. Fares outside
   INR 1,500 to 400,000 are dropped.
 - **Dead routes:** a route is written off after 3 empty dates in a row
@@ -119,7 +119,7 @@ Travelpayouts' free tier is a cache of other people's searches with no data for
 future months; do not re-test it. `fast-flights` builds a protobuf query and
 parses the HTML with no browser, which is lighter and harder to detect than
 Playwright. `browser_scrape.py` exists only to measure the gap between this
-path and what a browser sees (the reason for the 10% adjustment).
+path and what a browser sees (the reason for the price adjustment).
 
 ## Google Flights response formats
 

@@ -270,10 +270,10 @@ class Defaults(unittest.TestCase):
 
 class PriceAdjust(unittest.TestCase):
     @unittest.skipIf(os.environ.get("SCRAPE_PRICE_ADJUST"), "overridden in this environment")
-    def test_default_cut_is_ten_percent(self):
-        self.assertEqual(scrape.PRICE_ADJUST, 0.10)
-        self.assertEqual(scrape.adjusted_price(29828), 26845)
-        self.assertEqual(scrape.adjusted_price(10000), 9000)
+    def test_default_cut_is_five_percent(self):
+        self.assertEqual(scrape.PRICE_ADJUST, 0.05)
+        self.assertEqual(scrape.adjusted_price(29828), 28337)
+        self.assertEqual(scrape.adjusted_price(10000), 9500)
 
     def test_zero_turns_it_off(self):
         with mock.patch.object(scrape, "PRICE_ADJUST", 0.0):
@@ -283,7 +283,7 @@ class PriceAdjust(unittest.TestCase):
         fare = {"price": 30000, "outStops": 0, "inStops": None, "outDuration": 300, "inDuration": None,
                 "outLegs": [], "inLegs": [], "airline": "AirAsia"}
         rec = scrape.to_fare(BLR, KUL, "2026-11-15", "2026-11-18", fare, "2026-10-08T00:00:00Z")
-        self.assertEqual((rec["price"], rec["scrapedPrice"], rec["priceAdjustment"]), (27000, 30000, 0.10))
+        self.assertEqual((rec["price"], rec["scrapedPrice"], rec["priceAdjustment"]), (28500, 30000, 0.05))
 
 
 class SingleQuery(Base):

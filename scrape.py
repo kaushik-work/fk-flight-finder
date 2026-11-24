@@ -127,10 +127,10 @@ NONSTOP_QUERY = os.environ.get("SCRAPE_NONSTOP_QUERY", "0") == "1"
 # Fraction taken off every scraped price before it is stored. The protobuf
 # endpoint never returns Google's cheapest tier, which a person sees in a
 # browser on a home connection; measured gaps ran 9.6-12.4% (browser_scrape.py,
-# 18 Sep 2026). On 8 Oct 2026 the owner chose a flat 10% cut to bring stored
-# prices in line with what travellers see. The raw figure is kept beside it as
+# 18 Sep 2026). On 8 Oct 2026 the owner chose a flat 10% cut; on 24 Nov 2026 it
+# was reduced to 5%, so stored prices sit closer to what travellers see. The raw figure is kept beside it as
 # scrapedPrice, so the cut can be re-measured or undone. 0 turns it off.
-PRICE_ADJUST = float(os.environ.get("SCRAPE_PRICE_ADJUST", "0.10"))
+PRICE_ADJUST = float(os.environ.get("SCRAPE_PRICE_ADJUST", "0.05"))
 
 # Optional rotating proxies, comma-separated. Empty means direct from the
 # droplet IP, which is the verified-working default.
