@@ -166,7 +166,9 @@ class DamagedResponses(Base):
 
     def test_captcha_page_is_a_failure_not_an_empty_route(self):
         self.pages = [CAPTCHA, CAPTCHA]
-        self.assertEqual(scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 0), [])
+        # A CAPTCHA says nothing about the route: it raises SearchFailed (it used to return [], i.e. "no flights").
+        with self.assertRaises(scrape.SearchFailed):
+            scrape._search(BLR, KUL, "2026-11-15", "2026-11-18", 0)
         self.assertEqual(self.fetches, 2)  # one retry
         self.assertEqual(scrape.STATS["failed"], 1)
         self.assertEqual(scrape.STATS["unreadable"], 1)
@@ -322,6 +324,7 @@ class OriginGuard(Base):
         report = {"origins": {}}
         args = argparse.Namespace(limit=0, dry_run=False)
         with mock.patch.object(scrape, "post_fares", return_value=True) as post, \
+             mock.patch.object(scrape, "SEARCH_MODE", "grid"), \
              mock.patch.object(scrape, "sample_dates", return_value=[("2026-11-15", "2026-11-18")]):
             try:
                 scrape._run_origins([BLR], dests, [("2026-11-15", "2026-11-18")], args, report)

@@ -10,6 +10,14 @@ nothing, the old fares stay.
 ## How it works now
 
 - **8 origins x 53 destinations** (`routes.json`), trip lengths **3, 4, 5, 6, 7 nights**.
+- **One booking only.** Separate-ticket and self-transfer itineraries are left out (`SCRAPE_HIDE_SELF_TRANSFER`, default on), so
+  the cheapest fare can be bought as one ticket. It raises some fares a little (BLR to Bali +5%, BOM to Dubai +2% in a test).
+- **Empty pages are a coin toss.** On a route that has fares, Google answers the same query price, price, empty, price... A route
+  that has priced this pass gets up to 3 more asks on an empty page (`SCRAPE_EMPTY_RETRIES`); one that has not gets 1.
+- **A failed request is not "no flights".** A timeout, CAPTCHA or unreadable page raises `SearchFailed` and is ignored when
+  deciding a route is dead.
+- **Weekdays rotate** by the day, so over a week every weekday is sampled, not just Tue/Thu/Sat/Mon.
+- **`compare_one.py`** prices one route and date with each query setting, and compares with what you see in a browser.
 - **Months:** this month plus the next three (`SCRAPE_MONTHS`, default 3), matching what Flight deals shows. When the current
   month has 6 days or fewer left (`SCRAPE_SKIP_MONTH_DAYS`), it is skipped, because the website hides it then.
 - **Two-step search per destination.** Google's calendar/price-graph call is

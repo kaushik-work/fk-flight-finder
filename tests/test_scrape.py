@@ -146,7 +146,8 @@ class SearchTimeoutTest(unittest.TestCase):
         place = scrape.Place("bangalore", "BLR", "Bengaluru")
         dest = scrape.Place("kuala-lumpur", "KUL", "Kuala Lumpur")
         before = scrape.STATS["timeouts"]
-        self.assertEqual(scrape._search(place, dest, "2026-11-15", "2026-11-18", 0), [])
+        with self.assertRaises(scrape.SearchFailed):  # a timeout is "no answer", never "no flights"
+            scrape._search(place, dest, "2026-11-15", "2026-11-18", 0)
         self.assertEqual(self.calls, 2)
         self.assertEqual(scrape.STATS["timeouts"] - before, 2)
         self.assertEqual(scrape.BREAKER["streak"], 2)
