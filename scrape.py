@@ -76,7 +76,7 @@ SECRET = os.environ.get("FARE_INGEST_SECRET", "")
 
 # Months ahead, counting the current one. 4 gives five months of coverage,
 # which is what puts November and December on the page in September.
-MONTHS_AHEAD = int(os.environ.get("SCRAPE_MONTHS", "4"))
+MONTHS_AHEAD = int(os.environ.get("SCRAPE_MONTHS", "3"))  # this month plus 3 more: what the website's Flight deals shows
 
 # Trip lengths, in nights. Every value here multiplies the request count, so
 # this is the most expensive dial in the file.
@@ -344,11 +344,24 @@ SEARCH_MODE = os.environ.get("SCRAPE_MODE", "adaptive")
 COARSE_WEEKDAYS = [int(d) for d in os.environ.get("SCRAPE_COARSE_WEEKDAYS", "1,3,5,0").split(",") if d.strip()]
 
 
+# With this few days left in the month the website hides that month's dates, so the scraper does not spend requests on it.
+SKIP_MONTH_DAYS = int(os.environ.get("SCRAPE_SKIP_MONTH_DAYS", "6"))
+
+
+def month_nearly_over(today: date) -> bool:
+    """True when the current month has SKIP_MONTH_DAYS days or fewer left, counting today."""
+    last = (date(today.year + today.month // 12, today.month % 12 + 1, 1) - timedelta(days=1)).day
+    return last - today.day + 1 <= SKIP_MONTH_DAYS
+
+
 def coarse_dates(today: date | None = None) -> list[str]:
     """Step-one departure dates: week k of every month on COARSE_WEEKDAYS[k], plus the NEAR_DAYS dates."""
     today = today or date.today()
     out: set[date] = set()
+    skip_now = month_nearly_over(today)
     for i in range(0, MONTHS_AHEAD + 1):
+        if i == 0 and skip_now:
+            continue
         year_offset, month_index = divmod(today.month - 1 + i, 12)
         year, month = today.year + year_offset, month_index + 1
         for week, weekday in enumerate(COARSE_WEEKDAYS):
@@ -358,7 +371,10 @@ def coarse_dates(today: date | None = None) -> list[str]:
                 continue
             out.add(dep)
     for days in NEAR_DAYS:
-        out.add(today + timedelta(days=days))
+        near = today + timedelta(days=days)
+        if skip_now and (near.year, near.month) == (today.year, today.month):
+            continue
+        out.add(near)
     return sorted(d.isoformat() for d in out)
 
 

@@ -10,6 +10,8 @@ nothing, the old fares stay.
 ## How it works now
 
 - **8 origins x 53 destinations** (`routes.json`), trip lengths **3, 4, 5, 6, 7 nights**.
+- **Months:** this month plus the next three (`SCRAPE_MONTHS`, default 3), matching what Flight deals shows. When the current
+  month has 6 days or fewer left (`SCRAPE_SKIP_MONTH_DAYS`), it is skipped, because the website hides it then.
 - **Two-step search per destination.** Google's calendar/price-graph call is
   gated (error 13), so every price is a per-date request.
   1. Coarse pass: 18 dates at 5 nights. Dates are spread over different weekdays

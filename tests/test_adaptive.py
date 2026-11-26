@@ -20,19 +20,38 @@ class CoarseDates(unittest.TestCase):
         d = scrape.coarse_dates(date(2026, 11, 22))
         self.assertEqual(d, sorted(set(d)))
         self.assertIn("2026-12-02", d)  # the near-term date, ten days out
-        for m in ("2026-12", "2027-01", "2027-02", "2027-03"):
+        for m in ("2026-12", "2027-01", "2027-02"):
             self.assertGreaterEqual(sum(1 for x in d if x.startswith(m)), 4)
 
     def test_each_month_spans_several_weekdays_not_one(self):
         # Dates seven days apart share a weekday, which would hide that midweek fares are cheaper.
         d = scrape.coarse_dates(date(2026, 11, 22))
-        for m in ("2026-12", "2027-01", "2027-02", "2027-03"):
+        for m in ("2026-12", "2027-01", "2027-02"):
             weekdays = {date.fromisoformat(x).weekday() for x in d if x.startswith(m)}
             self.assertGreaterEqual(len(weekdays), 4, m)
 
     def test_the_current_month_is_not_left_empty(self):
         d = scrape.coarse_dates(date(2026, 11, 22))
         self.assertTrue(any(x.startswith("2026-11") for x in d))  # the date four days out
+
+    def test_covers_this_month_and_the_next_three_only(self):
+        d = scrape.coarse_dates(date(2026, 11, 10))
+        self.assertEqual(sorted({x[:7] for x in d}), ["2026-11", "2026-12", "2027-01", "2027-02"])
+
+    def test_current_month_is_skipped_when_six_days_or_fewer_remain(self):
+        # 25 Nov: 6 days left counting today. The website hides that month's dates, so no requests are spent on it.
+        for today in (date(2026, 11, 25), date(2026, 11, 30)):
+            d = scrape.coarse_dates(today)
+            self.assertFalse(any(x.startswith("2026-11") for x in d), today)
+            self.assertTrue(any(x.startswith("2026-12") for x in d))
+        # 24 Nov: 7 days left, still scraped.
+        self.assertTrue(any(x.startswith("2026-11") for x in scrape.coarse_dates(date(2026, 11, 24))))
+
+    def test_month_nearly_over_handles_december_and_february(self):
+        self.assertTrue(scrape.month_nearly_over(date(2026, 12, 26)))
+        self.assertFalse(scrape.month_nearly_over(date(2026, 12, 25)))
+        self.assertTrue(scrape.month_nearly_over(date(2027, 2, 23)))   # 28-day month: 6 left
+        self.assertFalse(scrape.month_nearly_over(date(2027, 2, 22)))
 
     def test_nothing_inside_three_days(self):
         today = date(2026, 11, 22)
