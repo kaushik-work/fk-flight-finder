@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import random
+import socket
 import sys
 import time
 import urllib.error
@@ -1030,6 +1031,27 @@ def to_fare(origin: Place, dest: Place, dep: str, ret: str, fare: dict[str, Any]
     }
 
 
+# Progress report for the admin screen. Best effort: it never raises and never holds the scrape up for long, so a
+# website outage cannot slow or stop scraping. One report a minute at most, plus one at each city boundary.
+HOST = os.environ.get("SCRAPE_HOST") or socket.gethostname()
+_HB = {"last": 0.0, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+def heartbeat(body: dict[str, Any], dry_run: bool = False, force: bool = False) -> None:
+    now = time.time()
+    if dry_run or not SECRET or (not force and now - _HB["last"] < 60):
+        return
+    _HB["last"] = now
+    payload = {"host": HOST, "passStartedAt": _HB["started"], **body}
+    try:
+        request = urllib.request.Request(
+            f"{API_BASE}/api/scraper-status", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "x-fare-secret": SECRET}, method="POST")
+        urllib.request.urlopen(request, timeout=8).close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def post_fares(origin_slug: str, fares: list[dict[str, Any]], dry_run: bool) -> bool:
     if dry_run:
         print(f"   [dry-run] would POST {len(fares)} fares for {origin_slug}", flush=True)
@@ -1099,6 +1121,7 @@ def main() -> int:
     report: dict[str, Any] = {"startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "origins": {}, "blocked": False}
     try:
         _run_origins(origins, dests, date_pairs, args, report)
+        heartbeat({"state": "idle", "cities": [o.slug for o in origins], "city": None, "done": 0, "total": 0, "destination": None}, args.dry_run, force=True)
     except Blocked:
         report["blocked"] = True
     report["seconds"] = int(time.time() - started)
@@ -1141,7 +1164,11 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
                 print(f"   {dest.code} — nothing", flush=True)
 
         second_chance: list[Place] = []
-        for dest in targets:
+        pass_cities = [o.slug for o in origins]
+        beat = {"state": "running", "cities": pass_cities, "city": origin.slug, "total": len(targets), "failed": 0}
+        heartbeat({**beat, "done": 0, "destination": None}, args.dry_run, force=True)
+        for i, dest in enumerate(targets):
+            heartbeat({**beat, "done": i, "destination": dest.code, "requests": STATS["requests"], "failed": STATS["failed"]}, args.dry_run)
             found: list[tuple[str, str, dict[str, Any]]] = []
             state = RouteState()
             if SEARCH_MODE != "grid":
@@ -1195,6 +1222,7 @@ def _run_origins(origins: list[Place], dests: list[Place], date_pairs: list[tupl
             ok = post_fares(origin.slug, fares, args.dry_run)
             report["origins"][origin.slug] = {"fares": len(fares), "stored": ok}
             print(f"   -> {len(fares)} fares, stored={ok}\n", flush=True)
+            heartbeat({**beat, "state": "running", "done": len(targets), "destination": None, "lastStored": {"city": origin.slug, "fares": len(fares), "ok": ok}}, args.dry_run, force=True)
         else:
             # Leaves the previous fares in place. An outage must look like stale
             # prices, never like no flights.
