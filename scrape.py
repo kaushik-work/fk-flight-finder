@@ -91,10 +91,10 @@ NIGHTS_LIST = sorted({
 })
 
 # The length the board defaults to, and the only one sampled on every departure
-# day. Sampling all three lengths on both days would be 27 pairs per route and
-# a 7.2h run, which overruns the 07:00 deadline from a 01:00 start. The
-# alternates get one departure a month instead, so 5 nights keeps the date
-# breadth people actually browse and 3 and 7 still exist in every month.
+# day. Pricing every length on every date would multiply the requests per route
+# and lengthen a pass (passes run continuously and take about 20 hours). The
+# other lengths get only the cheapest dates instead, so 5 nights keeps the date
+# breadth people actually browse and 3, 4, 6 and 7 still exist in every month.
 PRIMARY_NIGHTS = int(os.environ.get("SCRAPE_PRIMARY_NIGHTS", "5"))
 
 # Every sampled departure date gets every trip length in NIGHTS_LIST, so a date never shows only 5 nights. Set
