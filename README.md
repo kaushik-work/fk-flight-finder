@@ -110,9 +110,12 @@ Check progress with `ps -eo etime,cmd | grep "[s]crape.py"` and
 
 ## Backend (the Flight Klub website)
 
-`POST /api/flight-fares` (header `x-fare-secret`) replaces every stored fare for
-one origin, drops rows with a bad date or non-positive price, and refuses an
-empty set. The website reads Mongo directly (`src/lib/flight-fares/store.ts`).
+`POST /api/flight-fares` (header `x-fare-secret`) updates each posted fare in place (matched on origin, destination and both
+dates) and keeps the origin's other fares for 8 days, then removes fares older than that and trips that have already left.
+Because the scraper rotates the weekdays it samples, the days together give every weekday, and a fare someone looked at
+yesterday is still there today. It drops rows with a bad date or non-positive price, refuses an empty set, and refuses a pass
+smaller than half of the previous pass (unless `allowShrink`). The website reads Mongo directly
+(`src/lib/flight-fares/store.ts`), shows fares older than a day with their age, and computes averages from every kept fare.
 The route is deliberately not under `/api/admin`, whose auth gate would reject
 the scraper before the secret check.
 
