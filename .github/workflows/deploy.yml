@@ -1,11 +1,11 @@
 name: Deploy to droplet
 
-# Copies scrape.py, routes.json and run.sh to the droplet whenever they change on main.
+# Copies scrape.py, routes.json, run.sh and compare_one.py to the droplet whenever they change on main.
 # .env is never touched: it holds the ingest secret and is managed on the droplet.
 on:
   push:
     branches: [main]
-    paths: [scrape.py, routes.json, run.sh]
+    paths: [scrape.py, routes.json, run.sh, compare_one.py]
   workflow_dispatch:
     inputs:
       restart:
@@ -53,7 +53,7 @@ jobs:
           TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
         run: |
           scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            scrape.py routes.json run.sh "$TARGET:/opt/fk-flight-finder/"
+            scrape.py routes.json run.sh compare_one.py "$TARGET:/opt/fk-flight-finder/"
 
       - name: Check the new code, then restart if asked
         env:
@@ -114,7 +114,7 @@ jobs:
           TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET2_HOST }}
         run: |
           scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            scrape.py routes.json run.sh "$TARGET:/opt/fk-flight-finder/"
+            scrape.py routes.json run.sh compare_one.py "$TARGET:/opt/fk-flight-finder/"
 
       - name: Check the new code, then restart if asked
         env:
@@ -175,7 +175,7 @@ jobs:
           TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET3_HOST }}
         run: |
           scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            scrape.py routes.json run.sh "$TARGET:/opt/fk-flight-finder/"
+            scrape.py routes.json run.sh compare_one.py "$TARGET:/opt/fk-flight-finder/"
 
       - name: Check the new code, then restart if asked
         env:
