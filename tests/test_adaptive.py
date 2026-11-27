@@ -54,6 +54,21 @@ class CoarseDates(unittest.TestCase):
         self.assertTrue(scrape.month_nearly_over(date(2027, 2, 23)))   # 28-day month: 6 left
         self.assertFalse(scrape.month_nearly_over(date(2027, 2, 22)))
 
+    def test_the_first_month_is_sampled_twice_as_densely(self):
+        d = scrape.coarse_dates(date(2026, 12, 1))
+        per = {m: sum(1 for x in d if x.startswith(m)) for m in ("2026-12", "2027-01", "2027-02", "2027-03")}
+        self.assertGreaterEqual(per["2026-12"], 7)
+        self.assertLessEqual(per["2027-01"], 4)
+        # and on more weekdays: eight dates cover at least six of the seven
+        wd = {date.fromisoformat(x).weekday() for x in d if x.startswith("2026-12")}
+        self.assertGreaterEqual(len(wd), 6)
+
+    def test_the_extra_dates_can_be_switched_off(self):
+        from unittest import mock
+        with mock.patch.object(scrape, "FIRST_MONTH_EXTRA", False):
+            d = scrape.coarse_dates(date(2026, 12, 1))
+        self.assertLessEqual(sum(1 for x in d if x.startswith("2026-12")), 5)
+
     def test_nothing_inside_three_days(self):
         today = date(2026, 11, 22)
         for x in scrape.coarse_dates(today):

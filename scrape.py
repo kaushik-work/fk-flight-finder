@@ -348,6 +348,9 @@ SEARCH_MODE = os.environ.get("SCRAPE_MODE", "adaptive")
 COARSE_WEEKDAYS = [int(d) for d in os.environ.get("SCRAPE_COARSE_WEEKDAYS", "1,3,5,0").split(",") if d.strip()]
 
 
+# Sample the first month twice as densely (see coarse_dates). Set to 0 for the old four dates a month everywhere.
+FIRST_MONTH_EXTRA = os.environ.get("SCRAPE_FIRST_MONTH_EXTRA", "1") == "1"
+
 # With this few days left in the month the website hides that month's dates, so the scraper does not spend requests on it.
 SKIP_MONTH_DAYS = int(os.environ.get("SCRAPE_SKIP_MONTH_DAYS", "6"))
 
@@ -373,12 +376,21 @@ def coarse_dates(today: date | None = None) -> list[str]:
     today = today or date.today()
     out: set[date] = set()
     skip_now = month_nearly_over(today)
+    first = True
     for i in range(0, MONTHS_AHEAD + 1):
         if i == 0 and skip_now:
             continue
         year_offset, month_index = divmod(today.month - 1 + i, 12)
         year, month = today.year + year_offset, month_index + 1
-        for week, weekday in enumerate(coarse_weekdays(today)):
+        # The first month is the one the site lists the best three dates for, so it is sampled twice as densely:
+        # a second weekday in every week (three days on from the first), giving the best three of about eight dates
+        # rather than of four. The other months only need their cheapest date.
+        weekdays = coarse_weekdays(today)
+        picks = [(w, wd) for w, wd in enumerate(weekdays)]
+        if first and FIRST_MONTH_EXTRA:
+            picks += [(w, (wd + 3) % 7) for w, wd in enumerate(weekdays)]
+        first = False
+        for week, weekday in picks:
             week_start = date(year, month, 1 + 7 * week)  # the 1st, 8th, 15th, 22nd: always inside the month
             dep = week_start + timedelta(days=(weekday - week_start.weekday()) % 7)
             if dep.month != month or dep <= today + timedelta(days=3):

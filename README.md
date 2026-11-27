@@ -20,6 +20,10 @@ nothing, the old fares stay.
 - **`compare_one.py`** prices one route and date with each query setting, and compares with what you see in a browser.
 - **Months:** this month plus the next three (`SCRAPE_MONTHS`, default 3), matching what Flight deals shows. When the current
   month has 6 days or fewer left (`SCRAPE_SKIP_MONTH_DAYS`), it is skipped, because the website hides it then.
+- **Denser sampling for the first month.** The first month, the one the site lists the best three dates for, is sampled on two
+  weekdays a week (about 8 dates) instead of one (about 4), so its top three come from twice as many dates
+  (`SCRAPE_FIRST_MONTH_EXTRA=0` turns it off). Later months keep about 4 dates and one date at each other trip length: the site
+  uses them only for the month tabs and the cheapest fare.
 - **Top three dates at every length.** The site lists the three best dates of the first month for each trip length, so step two
   prices 3, 4, 6 and 7 nights on the `SCRAPE_TOP_DATES` (default 3) cheapest dates of the first month, and on the single cheapest
   date of each other month. It assumes the cheap dates at 5 nights are also the cheap dates at the other lengths: checked on
