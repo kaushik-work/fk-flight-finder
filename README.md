@@ -83,6 +83,20 @@ To set up a new droplet: copy `droplet_setup.sh`, `requirements.txt`, `run.sh`,
 `scrape.py`, `routes.json` to `/opt/fk-flight-finder`, copy `.env` from an existing
 droplet over a pipe (do not print it), then `ORIGINS=a,b bash droplet_setup.sh`.
 
+## Which site the scraper posts to
+
+`API_BASE` in each droplet's `.env` decides where fares and progress reports go. On 27 Nov 2026 it is `https://www.trripah.com`
+(the `trripah_website` repo): it has the old ingest (replaces a city's fares at once) and **no** `/api/scraper-status`, so progress
+reports get a 404 and are ignored. The finder site (`flight-klub-flight-finder`) has the new ingest (fares kept 8 days, price
+history) and the status endpoint, but it was not deployed anywhere yet: `www.flightklub.com` serves a different app.
+
+To move over, once the finder is deployed at some address `$SITE`:
+1. Put the same `FARE_INGEST_SECRET` in the finder site's hosting settings as on the droplets.
+2. Check `POST $SITE/api/flight-fares` and `POST $SITE/api/scraper-status` with no secret both answer 401, not 404.
+3. Check the secret matches: a POST with the secret and `{"originSlug":"x","fares":[]}` answers 400 (refused: empty), not 401.
+4. Change `API_BASE` on the three droplets. It applies from each droplet's next pass; nothing needs a restart.
+Both sites read the same database, so the finder shows fares whichever site they were posted through.
+
 ## Deploy
 
 Pushing `scrape.py`, `routes.json` or `run.sh` to `main` runs
