@@ -5,7 +5,7 @@ stores them in MongoDB (`flightklub.flight_fares`) for the Flight Klub website.
 Fares come only from Google Flights. Nothing is invented: when Google answers
 nothing, the old fares stay.
 
-*Last updated 24 Nov 2026.*
+*Last updated 27 Nov 2026.*
 
 ## How it works now
 
@@ -31,10 +31,11 @@ nothing, the old fares stay.
   15% dearer at 5 nights than at 3). Each extra date costs 4 requests per route; set `SCRAPE_TOP_DATES=1` for the old, cheaper scan.
 - **Two-step search per destination.** Google's calendar/price-graph call is
   gated (error 13), so every price is a per-date request.
-  1. Coarse pass: 18 dates at 5 nights. Dates are spread over different weekdays
-     within each month (`COARSE_WEEKDAYS`), plus near-term dates (`SCRAPE_NEAR_DAYS`,
-     default 4 and 10 days out) so the current month is never empty.
-  2. Fine pass: 3, 4, 6 and 7 nights on each month's cheapest coarse date.
+  1. Coarse pass: about 13 to 21 dates at 5 nights (about 8 in the first month, about 4 in each later one). Dates are
+     spread over different weekdays within each month (`COARSE_WEEKDAYS`, rotated daily), plus near-term dates
+     (`SCRAPE_NEAR_DAYS`, default 4 and 10 days out) so the current month is never empty.
+  2. Fine pass: 3, 4, 6 and 7 nights on the 3 cheapest coarse dates of the first month and on the cheapest date of each
+     later month.
 - **Pacing:** about 5 s between requests plus jitter (about 5.8 s measured).
 - **Price:** the stored price is Google's cheapest fare **less 5%** (`SCRAPE_PRICE_ADJUST`,
   default 0.05, cut from 10% on 24 Nov 2026; 0 turns it off), because the protobuf endpoint never returns Google's
@@ -52,11 +53,13 @@ nothing, the old fares stay.
 - **Baggage:** Google's payload lists each airline's own baggage-page URL
   (`payload[11]`). Each fare stores `baggage: [{airline, url}]`. Baggage
   allowances themselves are not in Google's data.
-- A city is written to the database only when its whole run finishes. Killing a
-  pass loses the city in progress; cities already stored are untouched.
+- A city is posted to the website only when its whole run finishes (the website then keeps fares for 8 days, see Backend).
+  Killing a pass loses the city in progress; cities already stored are untouched. Saving each destination as it finishes is
+  not built yet.
 
-Tests: `tests/test_adaptive.py` (one test needs `selectolax`, so it only runs on
-the droplets).
+Tests: `tests/` (`test_adaptive.py`, `test_fixes.py`, `test_pipeline.py`, `test_scrape.py`). Some need `selectolax` and the real
+`fast_flights`, so run the whole set on a droplet in a scratch folder:
+`python -m unittest discover -s tests` with the droplet's `.venv` python.
 
 ## Machines: three droplets
 
@@ -72,8 +75,8 @@ firing exit; when a pass ends, the next starts within the hour. Logs:
 | 2 | 168.144.81.14 | delhi, chennai, kolkata |
 | 3 | 168.144.122.179 | mumbai, ahmedabad |
 
-Each city takes about 5 to 6 hours, so a full pass is about 15 to 18 hours
-(droplet 3 about 11). Cities are scraped in the order listed, so put the ones
+Each city takes about 6 to 7 hours with the denser sampling, so a full pass is about 18 to 20 hours
+(droplet 3 about 13). Cities are scraped in the order listed, so put the ones
 you want fresh first. The city list lives in each droplet's `.env`
 (`SCRAPE_ORIGINS=a,b,c`); a change applies when the next pass starts.
 
