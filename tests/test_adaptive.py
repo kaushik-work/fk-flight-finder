@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -76,7 +77,8 @@ class TwoSteps(unittest.TestCase):
     def test_other_lengths_are_priced_only_on_each_months_cheapest_date(self):
         dates = ["2026-12-04", "2026-12-11", "2026-12-18", "2027-01-04", "2027-01-11"]
         cheap = {"2026-12-11": 20000, "2027-01-04": 21000}
-        found, asked = self.run_route(lambda dep, ret: cheap.get(dep, 30000), dates)
+        with mock.patch.object(scrape, "TOP_DATES", 1):  # the old behaviour: one date per month
+            found, asked = self.run_route(lambda dep, ret: cheap.get(dep, 30000), dates)
         primary = {d for d, r in asked if (date.fromisoformat(r) - date.fromisoformat(d)).days == scrape.PRIMARY_NIGHTS}
         self.assertEqual(primary, set(dates))
         fine_dates = {d for d, r in asked if (date.fromisoformat(r) - date.fromisoformat(d)).days != scrape.PRIMARY_NIGHTS}
@@ -88,6 +90,20 @@ class TwoSteps(unittest.TestCase):
             lengths = {(date.fromisoformat(r) - date.fromisoformat(d)).days for d, r, _ in found if d == best}
             self.assertEqual(lengths, set(scrape.NIGHTS_LIST))
 
+    def test_the_first_month_gets_its_three_cheapest_dates_at_every_length(self):
+        dates = ["2026-12-04", "2026-12-11", "2026-12-18", "2026-12-26", "2027-01-04", "2027-01-11"]
+        cheap = {"2026-12-11": 20000, "2026-12-18": 21000, "2026-12-26": 22000, "2027-01-04": 21000}
+        with mock.patch.object(scrape, "TOP_DATES", 3):
+            found, asked = self.run_route(lambda dep, ret: cheap.get(dep, 30000), dates)
+        fine = {d for d, r in asked if (date.fromisoformat(r) - date.fromisoformat(d)).days != scrape.PRIMARY_NIGHTS}
+        # December (the first month) refines its 3 cheapest dates; January only its cheapest.
+        self.assertEqual(fine, {"2026-12-11", "2026-12-18", "2026-12-26", "2027-01-04"})
+        others = len(scrape.NIGHTS_LIST) - 1
+        self.assertEqual(len(asked), len(dates) + 4 * others)
+        for best in ("2026-12-11", "2026-12-18", "2026-12-26"):
+            lengths = {(date.fromisoformat(r) - date.fromisoformat(d)).days for d, r, _ in found if d == best}
+            self.assertEqual(lengths, set(scrape.NIGHTS_LIST), best)
+
     def test_a_route_with_no_flights_stops_early_and_skips_step_two(self):
         dates = [f"2027-0{m}-{d:02d}" for m in (1, 2, 3) for d in (4, 11, 18, 25)]
         found, asked = self.run_route(lambda dep, ret: None, dates)
@@ -96,17 +112,18 @@ class TwoSteps(unittest.TestCase):
 
     def test_a_missing_length_on_the_best_day_does_not_kill_the_route(self):
         dates = ["2026-12-04", "2026-12-11"]
-        found, asked = self.run_route(
-            lambda dep, ret: 20000 if (date.fromisoformat(ret) - date.fromisoformat(dep)).days == scrape.PRIMARY_NIGHTS else None,
-            dates,
-        )
+        with mock.patch.object(scrape, "TOP_DATES", 1):
+            found, asked = self.run_route(
+                lambda dep, ret: 20000 if (date.fromisoformat(ret) - date.fromisoformat(dep)).days == scrape.PRIMARY_NIGHTS else None,
+                dates,
+            )
         self.assertEqual(len(found), 2)
         self.assertEqual(len(asked), 2 + len(scrape.NIGHTS_LIST) - 1)
 
     def test_request_estimate_is_an_upper_bound(self):
         d = scrape.coarse_dates(date(2026, 11, 22))
         months = len({x[:7] for x in d})
-        self.assertEqual(scrape.estimate_requests(10, d), 10 * (len(d) + months * (len(scrape.NIGHTS_LIST) - 1)))
+        self.assertEqual(scrape.estimate_requests(10, d), 10 * (len(d) + (months + scrape.TOP_DATES - 1) * (len(scrape.NIGHTS_LIST) - 1)))
 
 
 class SecondChance(unittest.TestCase):

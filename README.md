@@ -20,6 +20,11 @@ nothing, the old fares stay.
 - **`compare_one.py`** prices one route and date with each query setting, and compares with what you see in a browser.
 - **Months:** this month plus the next three (`SCRAPE_MONTHS`, default 3), matching what Flight deals shows. When the current
   month has 6 days or fewer left (`SCRAPE_SKIP_MONTH_DAYS`), it is skipped, because the website hides it then.
+- **Top three dates at every length.** The site lists the three best dates of the first month for each trip length, so step two
+  prices 3, 4, 6 and 7 nights on the `SCRAPE_TOP_DATES` (default 3) cheapest dates of the first month, and on the single cheapest
+  date of each other month. It assumes the cheap dates at 5 nights are also the cheap dates at the other lengths: checked on
+  one route it held for 7 nights (3 of 3) and mostly for 3 nights (2 of 3), but trip length does move the price (one date was
+  15% dearer at 5 nights than at 3). Each extra date costs 4 requests per route; set `SCRAPE_TOP_DATES=1` for the old, cheaper scan.
 - **Two-step search per destination.** Google's calendar/price-graph call is
   gated (error 13), so every price is a per-date request.
   1. Coarse pass: 18 dates at 5 nights. Dates are spread over different weekdays

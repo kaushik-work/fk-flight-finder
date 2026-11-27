@@ -396,6 +396,11 @@ def _return_date(dep: str, nights: int) -> str:
     return (date.fromisoformat(dep) + timedelta(days=nights)).isoformat()
 
 
+# How many dates of the first month are priced at the other trip lengths (3, 4, 6, 7 nights). Each extra date costs
+# one request per length. 1 gives the old behaviour (one date per month); 3 gives the site its "best three dates".
+TOP_DATES = max(1, int(os.environ.get("SCRAPE_TOP_DATES", "3")))
+
+
 def scrape_destination(origin: Place, dest: Place, dates: list[str], state: "RouteState | None" = None,
                        search: Any = None, pause: Any = None) -> list[tuple[str, str, dict[str, Any]]]:
     """Both steps for one route. Returns (departure, return, fare) for every date pair that priced.
@@ -406,7 +411,7 @@ def scrape_destination(origin: Place, dest: Place, dates: list[str], state: "Rou
     pause = pause or (lambda: time.sleep(DELAY + random.uniform(0, DELAY * 0.4)))
     state = state or RouteState()
     found: list[tuple[str, str, dict[str, Any]]] = []
-    best: dict[str, tuple[int, str]] = {}  # month -> (cheapest price, its date)
+    priced: dict[str, list[tuple[int, str]]] = {}  # month -> [(price, date)] for the primary trip length
 
     for n, dep in enumerate(dates):
         state.next_departure(dep)
@@ -420,24 +425,27 @@ def scrape_destination(origin: Place, dest: Place, dates: list[str], state: "Rou
         pause()
         if fare:
             found.append((dep, ret, fare))
-            month = dep[:7]
-            if month not in best or fare["price"] < best[month][0]:
-                best[month] = (fare["price"], dep)
+            priced.setdefault(dep[:7], []).append((fare["price"], dep))
 
     # Step two. A fresh state per call, already marked as priced, so a length that happens to have no flights on the
     # best day neither writes the route off nor counts toward its empty streak.
-    for month, (_, dep) in sorted(best.items()):
-        for nights in NIGHTS_LIST:
-            if nights == PRIMARY_NIGHTS:
-                continue
-            fine = RouteState()
-            fine.ever_priced = True
-            ret = _return_date(dep, nights)
-            fare = search(origin, dest, dep, ret, fine)
-            breaker_check()
-            pause()
-            if fare:
-                found.append((dep, ret, fare))
+    # Every month gets its cheapest date priced at the other trip lengths. The FIRST month (the one the site lists the
+    # "best three dates" for) gets its TOP_DATES cheapest, so a 3, 4, 6 or 7 night card has three dates and not one.
+    # This assumes the cheap dates for 5 nights are also the cheap ones for the other lengths, which is a good
+    # approximation (the fare depends mostly on the departure date) but not exact.
+    for i, month in enumerate(sorted(priced)):
+        for _, dep in sorted(priced[month])[: TOP_DATES if i == 0 else 1]:
+            for nights in NIGHTS_LIST:
+                if nights == PRIMARY_NIGHTS:
+                    continue
+                fine = RouteState()
+                fine.ever_priced = True
+                ret = _return_date(dep, nights)
+                fare = search(origin, dest, dep, ret, fine)
+                breaker_check()
+                pause()
+                if fare:
+                    found.append((dep, ret, fare))
     return found
 
 
@@ -472,7 +480,8 @@ def google_is_answering(origin: Place, dests: list[Place], dates: list[str], sea
 def estimate_requests(routes: int, dates: list[str]) -> int:
     """Upper bound: every coarse date asked, every month priced and refined."""
     months = len({d[:7] for d in dates})
-    return routes * (len(dates) + months * (len(NIGHTS_LIST) - 1))
+    other = len(NIGHTS_LIST) - 1
+    return routes * (len(dates) + (months + TOP_DATES - 1) * other)
 
 
 def _proxy_for(attempt: int) -> str | None:
